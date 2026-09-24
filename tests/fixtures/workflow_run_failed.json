@@ -1,0 +1,41 @@
+{
+  "action": "completed",
+  "workflow_run": {
+    "id": 9876543210,
+    "name": "CI",
+    "head_branch": "main",
+    "head_sha": "abc123def4567890abc123def4567890abc123de",
+    "path": ".github/workflows/ci.yml",
+    "display_title": "Upgrade dependencies",
+    "run_number": 182,
+    "event": "push",
+    "status": "completed",
+    "conclusion": "failure",
+    "workflow_id": 123456,
+    "run_attempt": 1,
+    "html_url": "https://github.com/acme/frontend/actions/runs/9876543210",
+    "created_at": "2026-09-15T10:00:00Z",
+    "updated_at": "2026-09-15T10:04:12Z",
+    "run_started_at": "2026-09-15T10:00:00Z",
+    "head_commit": {
+      "id": "abc123def4567890abc123def4567890abc123de",
+      "message": "Upgrade dependencies",
+      "timestamp": "2026-09-15T09:59:30Z",
+      "author": {"name": "Dev One", "email": "dev@example.com"}
+    },
+    "pull_requests": [],
+    "some_future_field": {"ignored": true}
+  },
+  "workflow": {"id": 123456, "name": "CI", "path": ".github/workflows/ci.yml"},
+  "repository": {
+    "id": 1111,
+    "name": "frontend",
+    "full_name": "acme/frontend",
+    "private": false,
+    "owner": {"login": "acme", "id": 42},
+    "html_url": "https://github.com/acme/frontend",
+    "default_branch": "main"
+  },
+  "installation": {"id": 555},
+  "sender": {"login": "dev-one", "id": 7}
+}

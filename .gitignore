@@ -1,0 +1,11 @@
+.env
+*.pem
+secrets/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+data/
+*.db

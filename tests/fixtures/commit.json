@@ -1,0 +1,13 @@
+{
+  "sha": "abc123def4567890abc123def4567890abc123de",
+  "html_url": "https://github.com/acme/frontend/commit/abc123def4567890abc123def4567890abc123de",
+  "commit": {
+    "message": "Upgrade dependencies",
+    "author": {"name": "Dev One", "email": "dev@example.com", "date": "2026-09-15T09:59:30Z"}
+  },
+  "stats": {"total": 42, "additions": 30, "deletions": 12},
+  "files": [
+    {"filename": "package.json", "status": "modified", "additions": 3, "deletions": 3, "patch": "@@ -1 +1 @@"},
+    {"filename": "package-lock.json", "status": "modified", "additions": 27, "deletions": 9}
+  ]
+}

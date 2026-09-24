@@ -1,0 +1,28 @@
+# Phase 4: a workflow that fails on purpose, to test the investigation flow end to end.
+# Copy into a test repository as .github/workflows/ci.yml and push.
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: echo "tests passed"
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          echo "npm ERR! code ERESOLVE"
+          echo "npm ERR! ERESOLVE unable to resolve dependency tree"
+          echo "npm ERR! Conflicting peer dependency: react@18.3.1"
+          exit 1
+      - name: Docker Build
+        run: echo "never reached (previous step failed)"

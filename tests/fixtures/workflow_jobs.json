@@ -1,0 +1,41 @@
+{
+  "total_count": 2,
+  "jobs": [
+    {
+      "id": 2001,
+      "run_id": 9876543210,
+      "run_attempt": 1,
+      "name": "test",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-15T10:00:10Z",
+      "completed_at": "2026-09-15T10:02:00Z",
+      "html_url": "https://github.com/acme/frontend/actions/runs/9876543210/job/2001",
+      "runner_name": "GitHub Actions 1",
+      "labels": ["ubuntu-latest"],
+      "steps": [
+        {"number": 1, "name": "Set up job", "status": "completed", "conclusion": "success"},
+        {"number": 2, "name": "Run tests", "status": "completed", "conclusion": "success"}
+      ]
+    },
+    {
+      "id": 2002,
+      "run_id": 9876543210,
+      "run_attempt": 1,
+      "name": "build",
+      "status": "completed",
+      "conclusion": "failure",
+      "started_at": "2026-09-15T10:00:10Z",
+      "completed_at": "2026-09-15T10:04:00Z",
+      "html_url": "https://github.com/acme/frontend/actions/runs/9876543210/job/2002",
+      "runner_name": "GitHub Actions 2",
+      "labels": ["ubuntu-latest"],
+      "steps": [
+        {"number": 1, "name": "Set up job", "status": "completed", "conclusion": "success"},
+        {"number": 2, "name": "Checkout", "status": "completed", "conclusion": "success"},
+        {"number": 3, "name": "Install dependencies", "status": "completed", "conclusion": "failure"},
+        {"number": 4, "name": "Docker Build", "status": "completed", "conclusion": "skipped"}
+      ]
+    }
+  ]
+}

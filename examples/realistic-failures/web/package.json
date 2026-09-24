@@ -1,0 +1,10 @@
+{
+  "name": "devinvestigator-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Frontend used to test DevInvestigator against a real npm dependency conflict",
+  "dependencies": {
+    "react": "17.0.2",
+    "react-dom": "18.3.1"
+  }
+}

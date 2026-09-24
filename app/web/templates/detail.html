@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}#{{ d.id }} {{ d.repository }}{% endblock %}
+{% block content %}
+<p><a href="/investigations">&larr; All investigations</a></p>
+<h1>{{ d.repository }} <span class="muted">/ {{ d.workflow }} #{{ d.run_number }}</span> <span class="badge {{ d.status }}">{{ d.status }}</span></h1>
+
+<dl class="meta">
+  <div><dt>Failed stage</dt><dd>{{ d.failed_stage }}</dd></div>
+  <div><dt>Branch</dt><dd>{{ d.head_branch or "-" }}</dd></div>
+  <div><dt>Commit</dt><dd><code>{{ d.head_sha_short }}</code></dd></div>
+  <div><dt>Run</dt><dd>{% if d.run_url %}<a href="{{ d.run_url }}" target="_blank" rel="noopener noreferrer">Open on GitHub</a>{% else %}-{% endif %}</dd></div>
+  <div><dt>Trigger</dt><dd>{{ d.trigger }}</dd></div>
+  <div><dt>Created (UTC)</dt><dd>{{ d.created }}</dd></div>
+  <div><dt>Took</dt><dd>{{ d.duration }}</dd></div>
+  <div><dt>Model</dt><dd>{{ d.model or "-" }}{% if d.mode %} &middot; {{ d.mode }}{% endif %}</dd></div>
+</dl>
+
+{% if d.status in ("queued", "running") %}
+<section class="card notice"><p>This investigation is {{ d.status }}. The page refreshes every few seconds.</p></section>
+{% endif %}
+
+{% if d.error %}
+<section class="card error">
+  <h2>Investigation failed</h2>
+  <pre>{{ d.error }}</pre>
+  <p class="muted">Run it again with <code>python -m app.cli retry {{ d.id }}</code></p>
+</section>
+{% endif %}
+
+{% if d.analysis %}
+<section class="card result">
+  <h2>Root cause</h2>
+  <p class="lead">{{ d.analysis.root_cause }}</p>
+  <h2>Suggested fix</h2>
+  <p class="lead">{{ d.analysis.recommendation }}</p>
+  <p class="muted">{{ d.analysis.summary }}</p>
+  <div class="facts">
+    <div><span class="label">Category</span> {{ d.analysis.category }}</div>
+    <div><span class="label">Confidence</span> {{ d.confidence_detail.final }}{% if d.confidence_detail.basis %} ({{ d.confidence_detail.basis }}){% endif %}
+      {% if d.confidence_detail.adjusted %}<span class="muted">&mdash; capped from {{ d.confidence_detail.reported }}: {{ d.confidence_detail.reason }}</span>{% endif %}</div>
+    <div><span class="label">Evidence</span> <span class="badge ev-{{ d.evidence_status }}">{{ d.evidence_status or "-" }}</span></div>
+  </div>
+  <p class="muted small">Suggestions only: DevInvestigator never changes your code.</p>
+</section>
+{% endif %}
+
+{% if d.evidence_items %}
+<section class="card">
+  <h2>Evidence cited</h2>
+  <p class="muted">Each quote is checked against the evidence the AI was actually given.</p>
+  <div class="table-wrap">
+  <table class="evidence">
+    <thead><tr><th></th><th>Source</th><th>Quote</th></tr></thead>
+    <tbody>
+    {% for e in d.evidence_items %}
+      <tr class="{{ 'ok' if e.valid else 'bad' }}">
+        <td class="mark" title="{{ 'verified' if e.valid else 'not verified' }}">{{ "✓" if e.valid else "✗" }}</td>
+        <td>{{ e.source }}</td>
+        <td><pre>{{ e.quote }}</pre>{% if not e.valid %}<div class="reason">{{ e.reason }}</div>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
+
+{% if d.tool_calls %}
+<section class="card">
+  <h2>What the agent looked at</h2>
+  <ol class="steps">
+  {% for t in d.tool_calls %}
+    <li><code>{{ t.tool }}{% if t.path is not none %}({{ t.path or "/" }}){% endif %}</code>
+      <span class="badge {{ 'completed' if t.ok else 'failed' }}">{{ "ok" if t.ok else t.error }}</span>
+      <div class="muted">{{ t.reasoning }}</div></li>
+  {% endfor %}
+  </ol>
+</section>
+{% endif %}
+
+{% if d.jobs %}
+<section class="card">
+  <h2>Failed jobs</h2>
+  {% for j in d.jobs %}
+  <h3>{{ j.name }}{% if j.url %} <a class="small" href="{{ j.url }}" target="_blank" rel="noopener noreferrer">open job</a>{% endif %}</h3>
+  {% if j.failed_steps %}<p>Failed step: {{ j.failed_steps | join(", ") }}</p>{% endif %}
+  {% if j.excerpt %}
+  <details open><summary>Error section of the log</summary><pre class="log">{{ j.excerpt }}</pre></details>
+  {% elif j.log_error %}<p class="muted">Log unavailable: {{ j.log_error }}</p>{% endif %}
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if d.commit %}
+<section class="card">
+  <h2>Commit</h2>
+  <p><code>{{ d.commit.sha_short }}</code> {{ d.commit.message }}{% if d.commit.author %} <span class="muted">by {{ d.commit.author }}</span>{% endif %}</p>
+  {% if d.commit.files %}<ul class="files">{% for f in d.commit.files %}<li><code>{{ f }}</code></li>{% endfor %}</ul>{% endif %}
+</section>
+{% endif %}
+
+{% if d.collection_errors %}
+<section class="card">
+  <h2>Evidence collection problems</h2>
+  <ul>{% for e in d.collection_errors %}<li>{{ e }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
+{% endblock %}

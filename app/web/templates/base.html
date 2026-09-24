@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{% if refresh %}<meta http-equiv="refresh" content="{{ refresh }}">{% endif %}
+<title>{% block title %}Investigations{% endblock %} · DevInvestigator</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/investigations">DevInvestigator</a>
+  <span class="tagline">CI/CD failure investigations</span>
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

@@ -1,0 +1,15 @@
+.env
+*.pem
+.venv/
+.git/
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+pytest.ini
+requirements-dev.txt
+Dockerfile
+docker-compose.yml
+README.md
+data/
+*.db

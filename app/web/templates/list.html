@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<nav class="counts" aria-label="Filter by status">
+  <a href="/investigations" class="count{% if not status %} active{% endif %}">All <b>{{ total }}</b></a>
+  {% for name in statuses %}
+  <a href="/investigations?status={{ name }}" class="count{% if status == name %} active{% endif %}"><span class="badge {{ name }}">{{ name }}</span> <b>{{ counts.get(name, 0) }}</b></a>
+  {% endfor %}
+</nav>
+{% if rows %}
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>#</th><th>Status</th><th>Run</th><th>Failed stage</th><th>Category</th><th class="num">Confidence</th><th>Created (UTC)</th><th class="num">Took</th></tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td><a href="/investigations/{{ r.id }}">{{ r.id }}</a></td>
+      <td><span class="badge {{ r.status }}">{{ r.status }}</span></td>
+      <td><a href="/investigations/{{ r.id }}">{{ r.repository }}</a><div class="muted">{{ r.workflow }} #{{ r.run_number }}</div></td>
+      <td>{{ r.failed_stage }}</td>
+      <td>{{ r.category }}</td>
+      <td class="num">{{ r.confidence }}</td>
+      <td class="nowrap">{{ r.created }}</td>
+      <td class="num">{{ r.duration }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="empty">No investigations{% if status %} with status "{{ status }}"{% endif %} yet. They appear here automatically when a pipeline fails.</p>
+{% endif %}
+{% endblock %}
