@@ -117,6 +117,7 @@ def detail(investigation: Investigation) -> dict[str, Any]:
         "model": investigation.model,
         "mode": investigation.mode,
         "error": investigation.error,
+        "reused_from": investigation.reused_from_id,
         "analysis": result.get("analysis"),
         "evidence_status": investigation.evidence_status,
         "confidence_detail": {

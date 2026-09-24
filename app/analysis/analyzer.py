@@ -46,7 +46,7 @@ def build_result(
     messages: list[LLMMessage],
     llm: LLMCallInfo,
     *,
-    mode: Literal["single_pass", "agent"] = "single_pass",
+    mode: Literal["single_pass", "agent", "reused"] = "single_pass",
     tool_calls: Sequence[ToolCallRecord] = (),
 ) -> AnalysisResult:
     """Validate citations against everything sent, apply the confidence policy, assemble the result."""

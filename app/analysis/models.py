@@ -134,7 +134,7 @@ class AnalysisResult(BaseModel):
     run_url: str | None = None
     status: str
     failed_stage: str | None = None
-    mode: Literal["single_pass", "agent"] = "single_pass"
+    mode: Literal["single_pass", "agent", "reused"] = "single_pass"
     analysis: RootCauseAnalysis  # exactly as the model returned it
     evidence_validation: EvidenceValidation
     confidence: float  # final score, after the confidence policy

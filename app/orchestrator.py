@@ -20,6 +20,7 @@ from app.analysis.analyzer import analyze_failure
 from app.core.config import Settings
 from app.database import repository
 from app.evidence.collector import collect_evidence_for_run
+from app.evidence.signature import failure_signature
 from app.integrations.github.client import GitHubClient
 from app.integrations.github.errors import GitHubAPIError
 from app.integrations.github.models import WorkflowRunEvent
@@ -134,6 +135,10 @@ class InvestigationOrchestrator:
                 logger.info("Investigation %s: evidence stored, analysis disabled (AUTO_ANALYZE=false)", investigation_id)
                 return
 
+            reused = await self._reuse_previous_answer(client, investigation_id, evidence)
+            if reused:
+                return
+
             provider = self._provider_factory(settings)
             if settings.analysis_mode == "agent":
                 tools = InvestigationTools(client, evidence, budget_chars=settings.agent_tool_budget_chars)
@@ -152,11 +157,46 @@ class InvestigationOrchestrator:
             # The result is stored first: a notification problem must never lose an investigation.
             await self._notify(client, investigation_id, evidence, result)
 
+    async def _reuse_previous_answer(self, client: GitHubClient, investigation_id: int, evidence) -> bool:
+        """Answer a repeated failure from the previous investigation instead of asking the model."""
+        settings = self._settings
+        if not settings.reuse_previous_results:
+            return False
+        async with self._sessionmaker() as session:
+            source = await repository.find_reusable(
+                session,
+                failure_signature(evidence),
+                evidence.repository.full_name,
+                within_days=settings.reuse_within_days,
+                exclude_id=investigation_id,
+            )
+            if source is None:
+                return False
+            result = await repository.reuse_result(session, investigation_id, source)
+        logger.info(
+            "Investigation %s: same failure as investigation %s, reused that answer (%s)",
+            investigation_id, source.id, result.analysis.category,
+        )
+        await self._notify(client, investigation_id, evidence, result)
+        return True
+
     async def _notify(self, client: GitHubClient, investigation_id: int, evidence, result) -> None:
         if not self._settings.notify_github_comments:
             return
+        async with self._sessionmaker() as session:
+            investigation = await repository.get(session, investigation_id)
+            repeat_count = 1
+            if investigation is not None and investigation.signature:
+                repeat_count = await repository.count_signature(
+                    session, investigation.signature, investigation.repository,
+                    within_days=self._settings.reuse_within_days,
+                )
+            reused_from = investigation.reused_from_id if investigation else None
         try:
-            url = await self._notifier(client, self._settings, investigation_id, evidence, result)
+            url = await self._notifier(
+                client, self._settings, investigation_id, evidence, result,
+                repeat_count=repeat_count, reused_from=reused_from,
+            )
         except Exception as exc:
             logger.warning("Investigation %s: could not post the GitHub comment: %s", investigation_id, exc)
             async with self._sessionmaker() as session:

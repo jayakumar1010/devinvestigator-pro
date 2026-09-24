@@ -94,3 +94,72 @@ async def test_list_recent_is_newest_first(sessionmaker) -> None:
         ids = [(await repository.create_investigation(session, fields(n)))[0].id for n in (1, 2, 3)]
         recent = await repository.list_recent(session, limit=2)
     assert [inv.id for inv in recent] == [ids[2], ids[1]]
+
+
+async def test_find_reusable_and_count_signature(sessionmaker) -> None:
+    from app.analysis.analyzer import analyze_failure
+    from tests.test_analysis import GOOD_ANALYSIS, FakeProvider, make_evidence
+
+    result = await analyze_failure(make_evidence(), FakeProvider(GOOD_ANALYSIS))
+    async with sessionmaker() as session:
+        first, _ = await repository.create_investigation(session, fields(run_id=1))
+        await repository.claim_next(session)
+        await repository.save_evidence(session, first.id, make_evidence())
+        await repository.complete(session, first.id, result)
+
+        second, _ = await repository.create_investigation(session, fields(run_id=2))
+        await repository.claim_next(session)
+        await repository.save_evidence(session, second.id, make_evidence())
+
+        signature = (await repository.get(session, second.id)).signature
+        assert signature and signature == (await repository.get(session, first.id)).signature
+
+        source = await repository.find_reusable(
+            session, signature, "acme/frontend", within_days=30, exclude_id=second.id
+        )
+        assert source is not None and source.id == first.id
+        assert await repository.count_signature(session, signature, "acme/frontend") == 2
+
+        reused = await repository.reuse_result(session, second.id, source)
+
+    assert reused.mode == "reused"
+    async with sessionmaker() as session:
+        stored = await repository.get(session, second.id)
+    assert (stored.status, stored.mode, stored.reused_from_id) == ("completed", "reused", first.id)
+    assert stored.root_cause == GOOD_ANALYSIS["root_cause"]
+
+
+async def test_find_reusable_ignores_old_and_unfinished_investigations(sessionmaker) -> None:
+    from tests.test_analysis import make_evidence
+
+    async with sessionmaker() as session:
+        queued, _ = await repository.create_investigation(session, fields(run_id=1))
+        await repository.claim_next(session)
+        await repository.save_evidence(session, queued.id, make_evidence())  # never completed
+        signature = (await repository.get(session, queued.id)).signature
+
+        assert await repository.find_reusable(
+            session, signature, "acme/frontend", within_days=30, exclude_id=999
+        ) is None
+
+
+async def test_a_reused_answer_reports_no_model_cost(sessionmaker) -> None:
+    from app.analysis.analyzer import analyze_failure
+    from tests.test_analysis import GOOD_ANALYSIS, FakeProvider, make_evidence
+
+    result = await analyze_failure(make_evidence(), FakeProvider(GOOD_ANALYSIS))
+    assert result.llm.calls == 1 and result.llm.prompt_tokens == 400
+
+    async with sessionmaker() as session:
+        first, _ = await repository.create_investigation(session, fields(run_id=1))
+        await repository.claim_next(session)
+        await repository.save_evidence(session, first.id, make_evidence())
+        await repository.complete(session, first.id, result)
+        second, _ = await repository.create_investigation(session, fields(run_id=2))
+        await repository.claim_next(session)
+        await repository.save_evidence(session, second.id, make_evidence())
+        reused = await repository.reuse_result(session, second.id, first)
+
+    assert (reused.llm.calls, reused.llm.duration_seconds) == (0, 0.0)
+    assert reused.llm.prompt_tokens is None
+    assert reused.llm.model == result.llm.model  # which model produced the original answer

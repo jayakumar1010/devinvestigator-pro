@@ -85,6 +85,8 @@ async def post_investigation_comment(
     evidence: FailureEvidence,
     result: AnalysisResult,
     *,
+    repeat_count: int = 1,
+    reused_from: int | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> str:
     """Comment on the pull request the commit belongs to, or on the commit itself."""
@@ -93,7 +95,9 @@ async def post_investigation_comment(
 
     owner, repo = evidence.repository.owner, evidence.repository.name
     sha = evidence.run.head_sha
-    body = render_comment(result, page_url=page_url(settings, investigation_id))
+    body = render_comment(
+        result, page_url=page_url(settings, investigation_id), repeat_count=repeat_count, reused_from=reused_from
+    )
 
     pulls: list[int] = []
     try:

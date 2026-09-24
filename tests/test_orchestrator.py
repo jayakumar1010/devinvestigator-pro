@@ -189,8 +189,8 @@ async def test_no_comment_is_posted_by_default(database_url, sessionmaker, githu
 async def test_the_comment_url_is_stored(database_url, sessionmaker, github) -> None:
     posted = {}
 
-    async def notifier(client, config, investigation_id, evidence, result):
-        posted.update(investigation_id=investigation_id, category=result.analysis.category)
+    async def notifier(client, config, investigation_id, evidence, result, **kwargs):
+        posted.update(investigation_id=investigation_id, category=result.analysis.category, **kwargs)
         return "https://github.com/acme/frontend/commit/abc#comment-1"
 
     config = settings(database_url, notify_github_comments=True, github_comment_token="write-token")
@@ -213,3 +213,73 @@ async def test_a_failed_comment_does_not_lose_the_investigation(database_url, se
     assert investigation.category == "dependency_failure"
     assert "403" in investigation.notification_error
     assert investigation.notification_url is None
+
+
+async def test_a_repeated_failure_reuses_the_previous_answer(database_url, sessionmaker, github) -> None:
+    """The second time the same failure appears, the model is not asked again."""
+    provider = FakeProvider(GOOD_ANALYSIS)
+    config = settings(database_url)
+    orchestrator = make_orchestrator(config, sessionmaker, github, provider)
+
+    first_id = await submit_and_process(orchestrator, sessionmaker)
+    first = await stored(sessionmaker, first_id)
+    calls_after_first = len(provider.calls)
+
+    # The same run fails again as a new attempt: same signature, new investigation.
+    second_event = event()
+    second_event.workflow_run.run_attempt = 2
+    second_id, created = await orchestrator.submit(second_event, "delivery-2")
+    assert created
+    async with sessionmaker() as session:
+        assert await repository.claim_next(session) == second_id
+    await orchestrator.process(second_id)
+    second = await stored(sessionmaker, second_id)
+
+    assert len(provider.calls) == calls_after_first  # no new model call
+    assert second.status == "completed"
+    assert second.mode == "reused"
+    assert second.reused_from_id == first.id
+    assert second.root_cause == first.root_cause
+    assert second.result["mode"] == "reused"
+    assert second.evidence is not None  # evidence is still collected and stored
+
+
+async def test_reuse_can_be_switched_off(database_url, sessionmaker, github) -> None:
+    provider = FakeProvider(GOOD_ANALYSIS)
+    config = settings(database_url, reuse_previous_results=False)
+    orchestrator = make_orchestrator(config, sessionmaker, github, provider)
+
+    await submit_and_process(orchestrator, sessionmaker)
+    calls_after_first = len(provider.calls)
+
+    second_event = event()
+    second_event.workflow_run.run_attempt = 2
+    second_id, _ = await orchestrator.submit(second_event, "delivery-2")
+    async with sessionmaker() as session:
+        await repository.claim_next(session)
+    await orchestrator.process(second_id)
+
+    assert len(provider.calls) == calls_after_first + 1  # analysed again
+    assert (await stored(sessionmaker, second_id)).mode == "single_pass"
+
+
+async def test_the_comment_reports_how_often_the_failure_happened(database_url, sessionmaker, github) -> None:
+    seen = {}
+
+    async def notifier(client, config, investigation_id, evidence, result, **kwargs):
+        seen[investigation_id] = kwargs
+        return "https://github.com/c/1"
+
+    config = settings(database_url, notify_github_comments=True, github_comment_token="write-token")
+    orchestrator = make_orchestrator(config, sessionmaker, github, FakeProvider(GOOD_ANALYSIS), notifier=notifier)
+
+    first_id = await submit_and_process(orchestrator, sessionmaker)
+    second_event = event()
+    second_event.workflow_run.run_attempt = 2
+    second_id, _ = await orchestrator.submit(second_event, "delivery-2")
+    async with sessionmaker() as session:
+        await repository.claim_next(session)
+    await orchestrator.process(second_id)
+
+    assert seen[first_id] == {"repeat_count": 1, "reused_from": None}
+    assert seen[second_id] == {"repeat_count": 2, "reused_from": first_id}

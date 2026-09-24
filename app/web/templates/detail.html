@@ -19,6 +19,15 @@
 <section class="card notice"><p>This investigation is {{ d.status }}. The page refreshes every few seconds.</p></section>
 {% endif %}
 
+{% if repeat_count > 1 %}
+<section class="card notice">
+  <p>⚠️ <strong>This failure has happened {{ repeat_count }} times recently.</strong>
+     If the code did not change in between, it may be a flaky test or an unstable dependency.</p>
+  {% if d.reused_from %}<p class="muted">Answer reused from investigation
+     <a href="/investigations/{{ d.reused_from }}">#{{ d.reused_from }}</a> — the analysis was not run again.</p>{% endif %}
+</section>
+{% endif %}
+
 {% if d.error %}
 <section class="card error">
   <h2>Investigation failed</h2>

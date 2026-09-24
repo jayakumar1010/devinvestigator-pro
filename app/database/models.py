@@ -44,6 +44,8 @@ class Investigation(Base):
     confidence_basis: Mapped[str | None] = mapped_column(String(16))
     evidence_status: Mapped[str | None] = mapped_column(String(32))
 
+    signature: Mapped[str | None] = mapped_column(String(32), index=True)  # same failure = same signature
+    reused_from_id: Mapped[int | None] = mapped_column(Integer)  # answer copied from this investigation
     notification_url: Mapped[str | None] = mapped_column(String(500))  # posted comment
     notification_error: Mapped[str | None] = mapped_column(Text)
 

@@ -75,9 +75,15 @@ async def investigation_detail(
 ) -> HTMLResponse:
     async with sessionmaker() as session:
         investigation = await repository.get(session, investigation_id)
+        repeat_count = (
+            await repository.count_signature(session, investigation.signature, investigation.repository)
+            if investigation is not None and investigation.signature
+            else 1
+        )
     if investigation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Investigation not found")
     return _render(request, "detail.html", {
         "d": views.detail(investigation),
+        "repeat_count": repeat_count,
         "refresh": REFRESH_SECONDS if investigation.status in ("queued", "running") else None,
     })

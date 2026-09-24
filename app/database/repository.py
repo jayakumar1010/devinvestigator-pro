@@ -1,6 +1,6 @@
 """Database access for investigations. The agent, tools and analysis never touch the database."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import func, select, update
@@ -11,12 +11,14 @@ from sqlalchemy.orm import defer
 from app.analysis.models import AnalysisResult
 from app.database.models import Investigation
 from app.evidence.models import FailureEvidence
+from app.evidence.signature import failure_signature
 from app.integrations.github.models import WorkflowRun
 
 REQUEUEABLE = ("failed", "completed", "collected")
 _RESULT_FIELDS = (
     "result", "category", "summary", "root_cause", "recommendation", "confidence",
     "confidence_basis", "evidence_status", "mode", "model", "notification_url", "notification_error",
+    "reused_from_id",
 )
 
 
@@ -141,8 +143,68 @@ def _finish(investigation: Investigation) -> None:
         investigation.duration_seconds = round((now - _as_utc(investigation.started_at)).total_seconds(), 2)
 
 
+async def find_reusable(
+    session: AsyncSession, signature: str, repository: str, *, within_days: int, exclude_id: int
+) -> Investigation | None:
+    """The most recent completed investigation of the same failure in the same repository."""
+    since = utcnow() - timedelta(days=within_days)
+    return await session.scalar(
+        select(Investigation)
+        .where(
+            Investigation.signature == signature,
+            Investigation.repository == repository,
+            Investigation.status == "completed",
+            Investigation.id != exclude_id,
+            Investigation.created_at >= since,
+        )
+        .order_by(Investigation.id.desc())
+        .limit(1)
+    )
+
+
+async def count_signature(session: AsyncSession, signature: str, repository: str, *, within_days: int = 30) -> int:
+    """How many times this failure has been seen recently, including the current one."""
+    since = utcnow() - timedelta(days=within_days)
+    return await session.scalar(
+        select(func.count())
+        .select_from(Investigation)
+        .where(
+            Investigation.signature == signature,
+            Investigation.repository == repository,
+            Investigation.created_at >= since,
+        )
+    ) or 0
+
+
+async def reuse_result(session: AsyncSession, investigation_id: int, source: Investigation) -> AnalysisResult:
+    """Copy a previous answer onto this investigation instead of asking the model again."""
+    investigation = await _require(session, investigation_id)
+    result = AnalysisResult.model_validate(source.result)
+    # No model was called: report that honestly instead of copying the original's cost.
+    reused_llm = result.llm.model_copy(update={"calls": 0, "duration_seconds": 0.0,
+                                               "prompt_tokens": None, "completion_tokens": None})
+    result = result.model_copy(update={"mode": "reused", "analyzed_at": utcnow(), "llm": reused_llm})
+    investigation.status = "completed"
+    investigation.error = None
+    investigation.mode = "reused"
+    investigation.reused_from_id = source.id
+    investigation.model = source.model
+    investigation.category = source.category
+    investigation.summary = source.summary
+    investigation.root_cause = source.root_cause
+    investigation.recommendation = source.recommendation
+    investigation.confidence = source.confidence
+    investigation.confidence_basis = source.confidence_basis
+    investigation.evidence_status = source.evidence_status
+    investigation.result = result.model_dump(mode="json")
+    _finish(investigation)
+    await session.commit()
+    return result
+
+
 async def save_evidence(session: AsyncSession, investigation_id: int, evidence: FailureEvidence) -> None:
     investigation = await _require(session, investigation_id)
+    investigation.signature = failure_signature(evidence)
     investigation.evidence = evidence.model_dump(mode="json")
     investigation.failed_stage = evidence.failed_stage
     investigation.workflow = evidence.workflow.name

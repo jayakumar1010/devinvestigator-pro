@@ -196,3 +196,16 @@ async def test_a_database_created_before_these_columns_is_upgraded(tmp_path) -> 
         columns = {row[1] for row in (await connection.exec_driver_sql("PRAGMA table_info(investigations)")).all()}
     await engine.dispose()
     assert {"notification_url", "notification_error", "confidence", "evidence"} <= columns
+
+
+async def test_comment_warns_about_a_repeated_failure() -> None:
+    body = render_comment(await analysis_result(), repeat_count=4, reused_from=7)
+
+    assert "has happened 4 times recently" in body
+    assert "flaky test" in body
+    assert "investigation #7" in body
+
+
+async def test_a_first_time_failure_has_no_repeat_note() -> None:
+    body = render_comment(await analysis_result())
+    assert "times recently" not in body and "reused" not in body

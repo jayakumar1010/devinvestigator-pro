@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     investigation_timeout_seconds: float = 900.0
     worker_poll_seconds: float = 5.0
 
+    # Repeated failures: reuse the previous answer instead of paying for the same investigation twice.
+    reuse_previous_results: bool = True
+    reuse_within_days: int = 30
+
     # Notifications. Posting a comment is the only write DevInvestigator can do, and it is off
     # by default with its own token, so the investigation token stays read-only.
     notify_github_comments: bool = False

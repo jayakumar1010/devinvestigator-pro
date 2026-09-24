@@ -14,7 +14,9 @@ def _fence(text: str) -> str:
     return f"{fence}text\n{quote}\n{fence}"
 
 
-def render_comment(result: AnalysisResult, *, page_url: str | None = None) -> str:
+def render_comment(
+    result: AnalysisResult, *, page_url: str | None = None, repeat_count: int = 1, reused_from: int | None = None
+) -> str:
     analysis = result.analysis
     confidence = f"{result.confidence:.2f}"
     basis = result.confidence_assessment.basis
@@ -38,6 +40,11 @@ def render_comment(result: AnalysisResult, *, page_url: str | None = None) -> st
 
     if result.confidence_assessment.adjusted:
         lines += ["", f"> Confidence was capped: {result.confidence_assessment.reason}."]
+
+    if repeat_count > 1:
+        lines += ["", f"⚠️ **This failure has happened {repeat_count} times recently.** If the code did not change, it may be a flaky test or an unstable dependency."]
+    if reused_from is not None:
+        lines += ["", f"_Same failure as investigation #{reused_from}; that answer was reused instead of running the analysis again._"]
 
     shown = [item for item in validation.items if item.valid][:MAX_EVIDENCE_ITEMS]
     if shown:
