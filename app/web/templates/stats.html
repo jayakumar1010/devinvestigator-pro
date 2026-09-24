@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Quality{% endblock %}
+{% block content %}
+<h1>Quality</h1>
+<p class="muted">How well DevInvestigator is doing, from its own stored investigations.</p>
+
+<div class="tiles">
+  <div class="tile"><span class="figure">{{ s.total }}</span><span class="label">investigations</span></div>
+  <div class="tile"><span class="figure">{{ s.completed }}</span><span class="label">completed</span></div>
+  <div class="tile"><span class="figure">{{ "%.2f"|format(s.average_confidence) if s.average_confidence else "—" }}</span><span class="label">average confidence</span></div>
+  <div class="tile"><span class="figure">{{ "%.0f s"|format(s.average_seconds) if s.average_seconds else "—" }}</span><span class="label">average analysis</span></div>
+  <div class="tile"><span class="figure">{{ s.verified }}/{{ s.with_evidence }}</span><span class="label">fully verified evidence</span></div>
+  <div class="tile"><span class="figure">{{ s.reused }}</span><span class="label">answers reused<br><span class="muted">≈ {{ s.seconds_saved }} s saved</span></span></div>
+  <div class="tile ok"><span class="figure">{{ s.feedback_correct }}</span><span class="label">marked correct</span></div>
+  <div class="tile bad"><span class="figure">{{ s.feedback_wrong }}</span><span class="label">marked wrong</span></div>
+</div>
+
+<div class="columns">
+  <section class="card">
+    <h2>Status</h2>
+    {% if s.by_status %}<ul class="counts-list">
+      {% for name, count in s.by_status.items() %}<li><span class="badge {{ name }}">{{ name }}</span> {{ count }}</li>{% endfor %}
+    </ul>{% else %}<p class="muted">Nothing yet.</p>{% endif %}
+  </section>
+  <section class="card">
+    <h2>Failure categories</h2>
+    {% if s.by_category %}<ul class="counts-list">
+      {% for name, count in s.by_category %}<li><code>{{ name }}</code> {{ count }}</li>{% endfor %}
+    </ul>{% else %}<p class="muted">Nothing yet.</p>{% endif %}
+  </section>
+  <section class="card">
+    <h2>Models used</h2>
+    {% if s.by_model %}<ul class="counts-list">
+      {% for name, count in s.by_model %}<li><code>{{ name.split("/")[-1] }}</code> {{ count }}</li>{% endfor %}
+    </ul>{% else %}<p class="muted">Nothing yet.</p>{% endif %}
+  </section>
+</div>
+{% endblock %}

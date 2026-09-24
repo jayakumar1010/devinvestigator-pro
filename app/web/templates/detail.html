@@ -53,6 +53,23 @@
 </section>
 {% endif %}
 
+{% if d.analysis %}
+<section class="card feedback">
+  <h2>Was this answer right?</h2>
+  {% if d.feedback %}
+    <p>You marked this answer <strong>{{ "correct ✓" if d.feedback == "correct" else "wrong ✗" }}</strong>.
+       <span class="muted">Choose again to change it.</span></p>
+  {% else %}
+    <p class="muted">Your answer is only used to measure how well DevInvestigator is doing.</p>
+  {% endif %}
+  <form method="post" action="/investigations/{{ d.id }}/feedback">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit" name="verdict" value="correct" class="vote{{ ' chosen' if d.feedback == 'correct' }}">✓ Correct</button>
+    <button type="submit" name="verdict" value="wrong" class="vote{{ ' chosen' if d.feedback == 'wrong' }}">✗ Wrong</button>
+  </form>
+</section>
+{% endif %}
+
 {% if d.evidence_items %}
 <section class="card">
   <h2>Evidence cited</h2>

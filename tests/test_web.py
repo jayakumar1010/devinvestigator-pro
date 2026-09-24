@@ -20,6 +20,12 @@ def client_for(auth=("admin", PASSWORD)) -> httpx.AsyncClient:
 
 
 @pytest.fixture
+async def client(dashboard):
+    async with client_for() as http_client:
+        yield http_client
+
+
+@pytest.fixture
 def dashboard(sessionmaker):
     app.state.sessionmaker = sessionmaker
     app.dependency_overrides[get_settings] = lambda: Settings(_env_file=None, dashboard_password=PASSWORD)
@@ -181,3 +187,102 @@ async def test_api_docs_are_off_and_css_is_public(dashboard) -> None:
         assert (await client.get("/openapi.json")).status_code == 404
         css = await client.get("/static/app.css")
     assert css.status_code == 200 and "--accent" in css.text
+
+
+# --- feedback and the quality page -------------------------------------------------
+
+def csrf_for(investigation_id: int) -> str:
+    from app.core.config import Settings
+    from app.web.auth import csrf_token
+
+    return csrf_token(Settings(_env_file=None, dashboard_password=PASSWORD), investigation_id)
+
+
+async def test_feedback_is_recorded(dashboard, client) -> None:
+    investigation_id = await seed(dashboard)
+
+    response = await client.post(
+        f"/investigations/{investigation_id}/feedback",
+        data={"verdict": "correct", "csrf": csrf_for(investigation_id)},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/investigations/{investigation_id}"
+
+    async with dashboard() as session:
+        stored = await repository.get(session, investigation_id)
+    assert stored.feedback == "correct" and stored.feedback_at is not None
+
+    page = (await client.get(f"/investigations/{investigation_id}")).text
+    assert "You marked this answer" in page and "correct" in page
+
+
+async def test_feedback_can_be_changed(dashboard, client) -> None:
+    investigation_id = await seed(dashboard)
+    for verdict in ("correct", "wrong"):
+        await client.post(
+            f"/investigations/{investigation_id}/feedback",
+            data={"verdict": verdict, "csrf": csrf_for(investigation_id)},
+            follow_redirects=False,
+        )
+    async with dashboard() as session:
+        assert (await repository.get(session, investigation_id)).feedback == "wrong"
+
+
+async def test_feedback_without_a_valid_token_is_refused(dashboard, client) -> None:
+    """A form posted from another site cannot vote, even though the browser sends the password."""
+    investigation_id = await seed(dashboard)
+
+    for token in ("", "wrong-token", csrf_for(investigation_id + 1)):
+        response = await client.post(
+            f"/investigations/{investigation_id}/feedback",
+            data={"verdict": "correct", "csrf": token},
+            follow_redirects=False,
+        )
+        assert response.status_code == 403
+
+    async with dashboard() as session:
+        assert (await repository.get(session, investigation_id)).feedback is None
+
+
+async def test_an_unknown_verdict_is_refused(dashboard, client) -> None:
+    investigation_id = await seed(dashboard)
+    response = await client.post(
+        f"/investigations/{investigation_id}/feedback",
+        data={"verdict": "maybe", "csrf": csrf_for(investigation_id)},
+        follow_redirects=False,
+    )
+    assert response.status_code == 400
+
+
+async def test_the_detail_page_offers_the_buttons(dashboard, client) -> None:
+    investigation_id = await seed(dashboard)
+    page = (await client.get(f"/investigations/{investigation_id}")).text
+
+    assert "Was this answer right?" in page
+    assert f'action="/investigations/{investigation_id}/feedback"' in page
+    assert csrf_for(investigation_id) in page
+    assert "form-action 'self'" in (await client.get(f"/investigations/{investigation_id}")).headers["Content-Security-Policy"]
+
+
+async def test_quality_page_counts(dashboard, client) -> None:
+    first = await seed(dashboard, run_id=1)
+    await seed(dashboard, run_id=2)
+    await seed(dashboard, run_id=3, finish=False)  # queued
+    await client.post(
+        f"/investigations/{first}/feedback", data={"verdict": "correct", "csrf": csrf_for(first)}, follow_redirects=False
+    )
+
+    response = await client.get("/investigations/stats")
+    page = response.text
+
+    assert response.status_code == 200
+    assert "Quality" in page
+    assert "dependency_failure" in page and "fake-model" in page
+    assert "marked correct" in page
+    assert "0.90" in page  # average confidence of the completed ones
+
+
+async def test_quality_page_needs_the_password(dashboard) -> None:
+    async with client_for(auth=None) as anonymous:
+        assert (await anonymous.get("/investigations/stats")).status_code == 401

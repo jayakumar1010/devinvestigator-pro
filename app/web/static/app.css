@@ -62,3 +62,20 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .files { padding-left: 18px; margin: 6px 0 0; }
 .empty { background: var(--panel); border: 1px dashed var(--line); border-radius: 10px; padding: 28px; text-align: center; color: var(--muted); }
 details summary { cursor: pointer; color: var(--muted); }
+
+.top-nav { margin-left: auto; display: flex; gap: 14px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; margin: 16px 0; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+.tile .figure { display: block; font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.tile .label { color: var(--muted); font-size: 13px; }
+.tile.ok .figure { color: var(--ok); }
+.tile.bad .figure { color: var(--bad); }
+.columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.counts-list { list-style: none; padding: 0; margin: 0; }
+.counts-list li { padding: 5px 0; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+.counts-list li:last-child { border-bottom: 0; }
+.feedback form { display: flex; gap: 10px; margin-top: 10px; }
+.vote { font: inherit; cursor: pointer; padding: 7px 16px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+.vote:hover { border-color: var(--accent); }
+.vote.chosen { border-color: var(--accent); background: var(--info-bg); font-weight: 600; }

@@ -258,6 +258,64 @@ async def save_notification(
     await session.commit()
 
 
+VERDICTS = ("correct", "wrong")
+
+
+async def set_feedback(session: AsyncSession, investigation_id: int, verdict: str) -> bool:
+    """Record whether a reader thought the answer was right."""
+    if verdict not in VERDICTS:
+        return False
+    investigation = await session.get(Investigation, investigation_id)
+    if investigation is None:
+        return False
+    investigation.feedback = verdict
+    investigation.feedback_at = utcnow()
+    await session.commit()
+    return True
+
+
+async def quality_stats(session: AsyncSession) -> dict[str, Any]:
+    """Counts the quality page shows. One query per question, all cheap."""
+
+    async def grouped(column) -> list[tuple[Any, int]]:
+        rows = await session.execute(
+            select(column, func.count()).where(column.is_not(None)).group_by(column).order_by(func.count().desc())
+        )
+        return [(value, count) for value, count in rows.all()]
+
+    completed = select(Investigation).where(Investigation.status == "completed").subquery()
+    total = await session.scalar(select(func.count()).select_from(Investigation)) or 0
+    verified = await session.scalar(
+        select(func.count()).select_from(Investigation).where(Investigation.evidence_status == "verified")
+    ) or 0
+    with_evidence = await session.scalar(
+        select(func.count()).select_from(Investigation).where(Investigation.evidence_status.is_not(None))
+    ) or 0
+    reused = await session.scalar(
+        select(func.count()).select_from(Investigation).where(Investigation.mode == "reused")
+    ) or 0
+    analysed_seconds = await session.scalar(
+        select(func.avg(Investigation.duration_seconds)).where(Investigation.mode.in_(("agent", "single_pass")))
+    )
+    feedback = dict(await grouped(Investigation.feedback))
+
+    return {
+        "total": total,
+        "by_status": dict(await grouped(Investigation.status)),
+        "by_category": await grouped(Investigation.category),
+        "by_model": await grouped(Investigation.model),
+        "average_confidence": await session.scalar(select(func.avg(Investigation.confidence))),
+        "average_seconds": analysed_seconds,
+        "verified": verified,
+        "with_evidence": with_evidence,
+        "reused": reused,
+        "seconds_saved": round((analysed_seconds or 0) * reused),
+        "feedback_correct": feedback.get("correct", 0),
+        "feedback_wrong": feedback.get("wrong", 0),
+        "completed": await session.scalar(select(func.count()).select_from(completed)) or 0,
+    }
+
+
 async def requeue(session: AsyncSession, investigation_id: int) -> bool:
     investigation = await get(session, investigation_id)
     if investigation is None or investigation.status not in REQUEUEABLE:

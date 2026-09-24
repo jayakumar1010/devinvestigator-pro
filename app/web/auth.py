@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import secrets
 from typing import Annotated
 
@@ -27,3 +29,13 @@ def require_dashboard_user(
     raise HTTPException(
         status.HTTP_401_UNAUTHORIZED, "Authentication required", headers={"WWW-Authenticate": 'Basic realm="DevInvestigator"'}
     )
+
+
+def csrf_token(settings: Settings, investigation_id: int) -> str:
+    """A token only this server can produce, so another site cannot post the form for you."""
+    key = settings.dashboard_password.get_secret_value().encode() if settings.dashboard_password else b""
+    return hmac.new(key, f"feedback:{investigation_id}".encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def valid_csrf_token(settings: Settings, investigation_id: int, token: str | None) -> bool:
+    return bool(token) and secrets.compare_digest(csrf_token(settings, investigation_id), token)
