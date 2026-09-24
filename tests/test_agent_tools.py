@@ -197,3 +197,91 @@ async def test_tools_only_send_get_requests(fake_github: FakeGitHub) -> None:
             assert (await tools.run(tool, path=path)).ok
 
     assert {r.method for r in fake_github.requests} == {"GET"}
+
+
+# --- search_repository and get_workflow_file --------------------------------------
+
+SEARCH_URL = f"{API_URL}/search/code"
+SEARCH_RESPONSE = {
+    "total_count": 2,
+    "items": [
+        {"path": "lib/discount.js", "text_matches": [{"fragment": "function applyDiscount(price, percent) {"}]},
+        {"path": "lib/discount.test.js", "text_matches": [{"fragment": "assert.equal(applyDiscount(200, 10), 180);"}]},
+    ],
+}
+
+
+async def test_search_repository_lists_matching_files(fake_github: FakeGitHub) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["q"] == "applyDiscount repo:acme/frontend"
+        assert request.headers["Accept"] == "application/vnd.github.text-match+json"
+        return httpx.Response(200, json=SEARCH_RESPONSE)
+
+    fake_github.add("GET", SEARCH_URL, handler)
+    client, tools = tools_for(fake_github)
+    async with client:
+        result = await tools.run("search_repository", query="applyDiscount")
+
+    assert result.ok and result.arguments == {"query": "applyDiscount"}
+    assert "- lib/discount.js" in result.content
+    assert "function applyDiscount(price, percent) {" in result.content
+    assert "Use get_file to read any of these in full." in result.content
+
+
+async def test_search_repository_without_matches(fake_github: FakeGitHub) -> None:
+    fake_github.add("GET", SEARCH_URL, httpx.Response(200, json={"total_count": 0, "items": []}))
+    client, tools = tools_for(fake_github)
+    async with client:
+        result = await tools.run("search_repository", query="nothingHere")
+    assert result.ok and "No code matching 'nothingHere'" in result.content
+
+
+async def test_search_repository_when_code_search_is_rate_limited(fake_github: FakeGitHub) -> None:
+    fake_github.add("GET", SEARCH_URL, httpx.Response(403, json={"message": "API rate limit exceeded"}))
+    client, tools = tools_for(fake_github)
+    async with client:
+        result = await tools.run("search_repository", query="applyDiscount")
+
+    assert (result.ok, result.error) == (False, "search_unavailable")
+    assert "unavailable for this repository" in result.content
+
+
+@pytest.mark.parametrize("query", ["", "   ", "x" * 300])
+async def test_search_repository_rejects_bad_queries(fake_github: FakeGitHub, query: str) -> None:
+    client, tools = tools_for(fake_github)
+    async with client:
+        result = await tools.run("search_repository", query=query)
+    assert (result.ok, result.error) == (False, "invalid_input")
+    assert fake_github.requests == []
+
+
+async def test_get_workflow_file_reads_the_failing_workflow(fake_github: FakeGitHub) -> None:
+    workflow = "name: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n"
+    fake_github.add("GET", f"{REPO}/contents/.github/workflows/ci.yml", httpx.Response(200, text=workflow))
+    client, tools = tools_for(fake_github)
+    async with client:
+        result = await tools.run("get_workflow_file")
+
+    assert result.ok
+    assert f"File .github/workflows/ci.yml at commit {FAILED_SHA[:12]}" in result.content
+    assert "   2 | on: push" in result.content
+
+
+async def test_get_workflow_file_without_a_known_path(fake_github: FakeGitHub) -> None:
+    client = GitHubClient(API_URL, TokenAuth("t"), transport=fake_github.transport)
+    evidence = make_evidence()
+    tools = InvestigationTools(client, evidence.model_copy(update={"workflow": evidence.workflow.model_copy(update={"path": None})}))
+    async with client:
+        result = await tools.run("get_workflow_file")
+    assert (result.ok, result.error) == (False, "not_found")
+
+
+async def test_the_new_tools_only_send_get_requests(fake_github: FakeGitHub) -> None:
+    fake_github.add("GET", SEARCH_URL, httpx.Response(200, json=SEARCH_RESPONSE))
+    fake_github.add("GET", f"{REPO}/contents/.github/workflows/ci.yml", httpx.Response(200, text="name: CI\n"))
+    client, tools = tools_for(fake_github)
+    async with client:
+        await tools.run("search_repository", query="applyDiscount")
+        await tools.run("get_workflow_file")
+
+    assert {r.method for r in fake_github.requests} == {"GET"}

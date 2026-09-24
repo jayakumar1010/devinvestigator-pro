@@ -1,0 +1,28 @@
+# Copy this into a repository as .devinvestigator.yml.
+# A failure whose log contains "match" is answered instantly from this file: no model call,
+# no cost, and the same answer every time. The matched log line becomes the evidence.
+rules:
+  - name: Test database was not ready
+    match: "ECONNREFUSED"
+    category: infrastructure_failure
+    root_cause: >-
+      The job could not reach a service it depends on (usually the test database
+      container), so the connection was refused before any test ran.
+    fix: >-
+      Re-run the job. If it keeps happening, add a health check to the service in the
+      workflow file so the steps wait until it is ready.
+    confidence: 0.85
+
+  - name: npm peer dependency conflict
+    match: "ERESOLVE unable to resolve dependency tree"
+    category: dependency_failure
+    root_cause: Two packages in package.json require incompatible versions of the same dependency.
+    fix: >-
+      Align the versions in package.json. Do not use --force or --legacy-peer-deps: they hide
+      the conflict instead of fixing it.
+
+  - name: Out of disk space on the runner
+    match: "No space left on device"
+    category: infrastructure_failure
+    root_cause: The GitHub-hosted runner ran out of disk while the job was running.
+    fix: Free space in the job (remove caches or unused tool directories) or use a larger runner.

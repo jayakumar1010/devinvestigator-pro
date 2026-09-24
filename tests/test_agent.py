@@ -14,8 +14,8 @@ PACKAGE_JSON = '{\n  "dependencies": {\n    "react": "17.0.2",\n    "react-dom":
 FINAL = {**GOOD_ANALYSIS, "evidence": ["npm ERR! Conflicting peer dependency: react@18.3.1", '"react": "17.0.2"']}
 
 
-def step(action: str, path: str = "", reasoning: str = "next") -> dict:
-    return {"reasoning": reasoning, "action": action, "path": path}
+def step(action: str, path: str = "", reasoning: str = "next", query: str = "") -> dict:
+    return {"reasoning": reasoning, "action": action, "path": path, "query": query}
 
 
 class ScriptedProvider:
@@ -40,10 +40,10 @@ class FakeTools:
         self.contents = contents or {}
         self.calls: list[tuple[str, str]] = []
 
-    async def run(self, tool: str, *, path: str = "") -> ToolResult:
-        self.calls.append((tool, path))
-        arguments = {"path": path} if tool == "get_file" else {}
-        return ToolResult(tool, arguments, self.contents.get((tool, path), "nothing relevant"))
+    async def run(self, tool: str, *, path: str = "", query: str = "") -> ToolResult:
+        self.calls.append((tool, path or query))
+        arguments = {"path": path} if path else ({"query": query} if query else {})
+        return ToolResult(tool, arguments, self.contents.get((tool, path or query), "nothing relevant"))
 
 
 async def test_agent_reads_a_file_then_answers_with_verified_tool_evidence() -> None:
@@ -140,5 +140,39 @@ def test_agent_prompt_is_the_analysis_prompt_plus_tools() -> None:
         assert f"- {tool}:" in TOOLS_SECTION
     assert "$defs" not in STEP_SCHEMA
     assert STEP_SCHEMA["properties"]["action"]["enum"] == [
-        "get_file", "get_previous_successful_run", "compare_commits", "finish",
+        "get_file", "search_repository", "get_workflow_file", "get_previous_successful_run", "compare_commits", "finish",
     ]
+
+
+async def test_the_agent_can_search_and_read_the_workflow() -> None:
+    provider = ScriptedProvider([
+        step("search_repository", reasoning="The log gives no path; find where applyDiscount lives."),
+        step("get_workflow_file", reasoning="Check how the job is configured."),
+        step("finish"),
+        GOOD_ANALYSIS,
+    ])
+    provider.replies[0]["query"] = "applyDiscount"
+    tools = FakeTools({
+        ("search_repository", "applyDiscount"): "- lib/discount.js",
+        ("get_workflow_file", ""): "name: CI",
+    })
+    run = await investigate(make_evidence(), provider, tools)
+
+    assert tools.calls == [("search_repository", "applyDiscount"), ("get_workflow_file", "")]
+    assert [(r.tool, r.arguments) for r in run.result.tool_calls] == [
+        ("search_repository", {"query": "applyDiscount"}),
+        ("get_workflow_file", {}),
+    ]
+
+
+async def test_repeated_searches_are_not_sent_twice() -> None:
+    provider = ScriptedProvider([
+        step("search_repository"), step("search_repository"), step("finish"), GOOD_ANALYSIS,
+    ])
+    for reply in provider.replies[:2]:
+        reply["query"] = "applyDiscount"
+    tools = FakeTools({("search_repository", "applyDiscount"): "- lib/discount.js"})
+    run = await investigate(make_evidence(), provider, tools)
+
+    assert tools.calls == [("search_repository", "applyDiscount")]
+    assert [r.error for r in run.result.tool_calls] == [None, "duplicate_request"]

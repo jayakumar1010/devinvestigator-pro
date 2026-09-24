@@ -283,3 +283,58 @@ async def test_the_comment_reports_how_often_the_failure_happened(database_url, 
 
     assert seen[first_id] == {"repeat_count": 1, "reused_from": None}
     assert seen[second_id] == {"repeat_count": 2, "reused_from": first_id}
+
+
+RULES_YAML = """
+rules:
+  - name: npm peer dependency conflict
+    match: "Could not resolve dependency"
+    category: dependency_failure
+    root_cause: Two packages need incompatible versions of the same dependency.
+    fix: Align the versions in package.json.
+"""
+
+
+async def test_a_team_rule_answers_without_calling_the_model(database_url, sessionmaker, github) -> None:
+    github.add("GET", f"{REPO}/contents/.devinvestigator.yml", httpx.Response(200, text=RULES_YAML))
+    provider = FakeProvider(GOOD_ANALYSIS)
+    orchestrator = make_orchestrator(settings(database_url), sessionmaker, github, provider)
+    investigation = await stored(sessionmaker, await submit_and_process(orchestrator, sessionmaker))
+
+    assert provider.calls == []  # no model call at all
+    assert (investigation.status, investigation.mode) == ("completed", "rule")
+    assert investigation.category == "dependency_failure"
+    assert investigation.root_cause == "Two packages need incompatible versions of the same dependency."
+    assert investigation.model == "npm peer dependency conflict"
+    assert investigation.evidence_status == "verified"  # the quote comes from the real log
+    assert investigation.duration_seconds is not None
+
+
+async def test_an_unrelated_rule_leaves_the_investigation_to_the_model(database_url, sessionmaker, github) -> None:
+    unrelated = "rules:\n  - name: disk full\n    match: No space left on device\n    root_cause: r\n    fix: f\n"
+    github.add("GET", f"{REPO}/contents/.devinvestigator.yml", httpx.Response(200, text=unrelated))
+    provider = FakeProvider(GOOD_ANALYSIS)
+    orchestrator = make_orchestrator(settings(database_url), sessionmaker, github, provider)
+    investigation = await stored(sessionmaker, await submit_and_process(orchestrator, sessionmaker))
+
+    assert len(provider.calls) == 1
+    assert investigation.mode == "single_pass"
+
+
+async def test_no_rules_file_is_the_normal_case(database_url, sessionmaker, github) -> None:
+    # github has no /contents/.devinvestigator.yml route, so the lookup returns 404.
+    provider = FakeProvider(GOOD_ANALYSIS)
+    orchestrator = make_orchestrator(settings(database_url), sessionmaker, github, provider)
+    investigation = await stored(sessionmaker, await submit_and_process(orchestrator, sessionmaker))
+
+    assert investigation.status == "completed" and investigation.mode == "single_pass"
+
+
+async def test_rules_can_be_switched_off(database_url, sessionmaker, github) -> None:
+    github.add("GET", f"{REPO}/contents/.devinvestigator.yml", httpx.Response(200, text=RULES_YAML))
+    provider = FakeProvider(GOOD_ANALYSIS)
+    config = settings(database_url, use_repository_rules=False)
+    orchestrator = make_orchestrator(config, sessionmaker, github, provider)
+    investigation = await stored(sessionmaker, await submit_and_process(orchestrator, sessionmaker))
+
+    assert len(provider.calls) == 1 and investigation.mode == "single_pass"

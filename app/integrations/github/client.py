@@ -7,7 +7,7 @@ not modify any repository.
 
 import json
 from dataclasses import dataclass
-from typing import Self
+from typing import Any, Self
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -249,3 +249,16 @@ class GitHubClient:
         """Open pull requests that contain this commit, newest first (read-only)."""
         response = await self._get(f"/repos/{_seg(owner)}/{_seg(repo)}/commits/{_seg(sha)}/pulls")
         return [pull["number"] for pull in response.json() if pull.get("state") == "open"]
+
+    async def search_code(self, owner: str, repo: str, query: str, *, per_page: int = 10) -> list[dict[str, Any]]:
+        """Code search inside one repository. Returns matching paths with text fragments."""
+        response = await self._get(
+            "/search/code",
+            {"q": f"{query} repo:{owner}/{repo}", "per_page": per_page},
+            accept="application/vnd.github.text-match+json",
+        )
+        results = []
+        for item in response.json().get("items", []):
+            fragments = [match.get("fragment", "") for match in item.get("text_matches", [])]
+            results.append({"path": item.get("path", ""), "fragments": fragments})
+        return results

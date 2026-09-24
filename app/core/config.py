@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     investigation_timeout_seconds: float = 900.0
     worker_poll_seconds: float = 5.0
 
+    # Team rules: a .devinvestigator.yml in the investigated repository answers known failures
+    # without calling a model.
+    use_repository_rules: bool = True
+    rules_file: str = ".devinvestigator.yml"
+
     # Repeated failures: reuse the previous answer instead of paying for the same investigation twice.
     reuse_previous_results: bool = True
     reuse_within_days: int = 30

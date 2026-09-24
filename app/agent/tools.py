@@ -13,10 +13,13 @@ from app.integrations.github.client import GitHubClient
 from app.integrations.github.errors import GitHubAPIError
 from app.integrations.github.models import WorkflowRun
 
-TOOL_NAMES = ("get_file", "get_previous_successful_run", "compare_commits")
+TOOL_NAMES = ("get_file", "search_repository", "get_workflow_file", "get_previous_successful_run", "compare_commits")
 MAX_PATH_CHARS = 300
 MAX_FILE_CHARS = 12_000
 MAX_COMPARE_CHARS = 15_000
+MAX_SEARCH_RESULTS = 10
+MAX_FRAGMENT_CHARS = 400
+MAX_QUERY_CHARS = 200
 MAX_PATCH_CHARS = 3_000
 MAX_COMPARE_COMMITS = 30
 SUCCESSFUL_RUNS_CHECKED = 20
@@ -53,8 +56,12 @@ class InvestigationTools:
     def chars_used(self) -> int:
         return self._used
 
-    async def run(self, tool: str, *, path: str = "") -> ToolResult:
-        arguments = {"path": path} if tool == "get_file" else {}
+    async def run(self, tool: str, *, path: str = "", query: str = "") -> ToolResult:
+        arguments: dict[str, str] = {}
+        if tool == "get_file":
+            arguments["path"] = path
+        elif tool == "search_repository":
+            arguments["query"] = query
         if tool not in TOOL_NAMES:
             return ToolResult(tool, arguments, f"Unknown tool {tool!r}.", ok=False, error="unknown_tool")
         if self._used >= self._budget:
@@ -65,6 +72,10 @@ class InvestigationTools:
         try:
             if tool == "get_file":
                 content = await self.get_file(path)
+            elif tool == "search_repository":
+                content = await self.search_repository(query)
+            elif tool == "get_workflow_file":
+                content = await self.get_workflow_file()
             elif tool == "get_previous_successful_run":
                 content = await self.get_previous_successful_run()
             else:
@@ -105,6 +116,38 @@ class InvestigationTools:
         if len(body) > MAX_FILE_CHARS:
             body = body[:MAX_FILE_CHARS] + f"\n[truncated: the file continues beyond {MAX_FILE_CHARS} characters]"
         return f"File {where} ({len(lines)} lines):\n{body}"
+
+    async def search_repository(self, query: str) -> str:
+        """Find where something appears in the repository, when the path is not in the log."""
+        clean = query.strip()
+        if not clean or len(clean) > MAX_QUERY_CHARS:
+            raise ToolError("query must be a short search term", "invalid_input")
+        try:
+            results = await self._client.search_code(self._owner, self._repo, clean, per_page=MAX_SEARCH_RESULTS)
+        except GitHubAPIError as exc:
+            if exc.status_code in (403, 422):
+                # Code search is rate limited (10/minute) and only covers indexed repositories.
+                raise ToolError(f"Code search is unavailable for this repository right now ({exc.status_code}).", "search_unavailable") from exc
+            raise
+        if not results:
+            return f"No code matching {clean!r} was found in {self._owner}/{self._repo}."
+
+        lines = [f"Files matching {clean!r} in {self._owner}/{self._repo}:"]
+        for result in results:
+            lines.append(f"- {result['path']}")
+            for fragment in result["fragments"][:2]:
+                snippet = " ".join(fragment.split())[:MAX_FRAGMENT_CHARS]
+                if snippet:
+                    lines.append(f"    {snippet}")
+        lines.append("Use get_file to read any of these in full.")
+        return "\n".join(lines)
+
+    async def get_workflow_file(self) -> str:
+        """The workflow definition that failed: many failures are configuration, not code."""
+        path = self._evidence.workflow.path
+        if not path:
+            raise ToolError("The workflow file path is not known for this run.", "not_found")
+        return await self.get_file(path)
 
     async def _previous_success(self) -> WorkflowRun | None:
         """Most recent successful run of the same workflow and branch created before the failure."""

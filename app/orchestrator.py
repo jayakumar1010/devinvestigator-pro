@@ -16,7 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent.investigator import investigate
 from app.agent.tools import InvestigationTools
-from app.analysis.analyzer import analyze_failure
+from app.analysis.analyzer import analyze_failure, build_result
+from app.analysis.models import LLMCallInfo
+from app.analysis.prompts import build_messages
+from app.analysis.rules import load_rules, match_rule, rule_analysis
 from app.core.config import Settings
 from app.database import repository
 from app.evidence.collector import collect_evidence_for_run
@@ -135,6 +138,9 @@ class InvestigationOrchestrator:
                 logger.info("Investigation %s: evidence stored, analysis disabled (AUTO_ANALYZE=false)", investigation_id)
                 return
 
+            if await self._apply_team_rules(client, investigation_id, evidence):
+                return
+
             reused = await self._reuse_previous_answer(client, investigation_id, evidence)
             if reused:
                 return
@@ -156,6 +162,41 @@ class InvestigationOrchestrator:
             )
             # The result is stored first: a notification problem must never lose an investigation.
             await self._notify(client, investigation_id, evidence, result)
+
+    async def _apply_team_rules(self, client: GitHubClient, investigation_id: int, evidence) -> bool:
+        """Answer from the repository's own rules file, when one of its rules matches."""
+        settings = self._settings
+        if not settings.use_repository_rules:
+            return False
+        try:
+            content = await client.get_file(
+                evidence.repository.owner, evidence.repository.name, settings.rules_file, ref=evidence.run.head_sha
+            )
+        except GitHubAPIError as exc:
+            if exc.status_code != 404:  # a missing rules file is the normal case
+                logger.info("Investigation %s: could not read %s (%s)", investigation_id, settings.rules_file, exc)
+            return False
+        if content.kind != "file":
+            return False
+
+        matched = match_rule(load_rules(content.text), evidence)
+        if matched is None:
+            return False
+        rule, line = matched
+
+        analysis = rule_analysis(rule, line)
+        result = build_result(
+            evidence,
+            analysis,
+            build_messages(evidence),
+            LLMCallInfo(provider="rule", model=rule.name, duration_seconds=0.0, calls=0),
+            mode="rule",
+        )
+        async with self._sessionmaker() as session:
+            await repository.complete(session, investigation_id, result)
+        logger.info("Investigation %s: matched the team rule %r, no model was called", investigation_id, rule.name)
+        await self._notify(client, investigation_id, evidence, result)
+        return True
 
     async def _reuse_previous_answer(self, client: GitHubClient, investigation_id: int, evidence) -> bool:
         """Answer a repeated failure from the previous investigation instead of asking the model."""

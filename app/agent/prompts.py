@@ -13,7 +13,9 @@ from app.analysis.prompts import PROMPT_INTRO, SYSTEM_PROMPT, build_messages
 from app.evidence.models import FailureEvidence
 from app.llm.base import LLMMessage
 
-AgentAction = Literal["get_file", "get_previous_successful_run", "compare_commits", "finish"]
+AgentAction = Literal[
+    "get_file", "search_repository", "get_workflow_file", "get_previous_successful_run", "compare_commits", "finish"
+]
 
 
 class AgentStep(BaseModel):
@@ -24,6 +26,7 @@ class AgentStep(BaseModel):
     reasoning: str = Field(description="One or two sentences: what you need next and why, or why the evidence is sufficient.")
     action: AgentAction
     path: str = Field(description='Path for get_file, e.g. "lib/discount.js" or "" for the repository root; "" otherwise.')
+    query: str = Field(description='Search term for search_repository, e.g. "applyDiscount"; "" otherwise.')
 
 
 STEP_SCHEMA = AgentStep.model_json_schema()
@@ -31,6 +34,8 @@ STEP_SCHEMA = AgentStep.model_json_schema()
 TOOLS_SECTION = """Tools:
 - Before answering you may request more evidence, one tool per turn. Tools are read-only and limited to this repository and this failed run.
 - get_file: read a file, or list a directory, at the failing commit. Set "path", for example "lib/discount.js", or "" for the repository root.
+- search_repository: find which files mention something when the log does not give a path. Set "query", for example a function name.
+- get_workflow_file: read the workflow definition that failed. Many failures are configuration, not code.
 - get_previous_successful_run: find the most recent successful run of this workflow on this branch before the failure.
 - compare_commits: list the commits and file changes between the last successful run's commit and the failing commit.
 - finish: stop requesting evidence; you will then be asked for the final analysis.

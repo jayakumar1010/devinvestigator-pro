@@ -29,7 +29,7 @@ from app.llm.base import LLMError, LLMMessage, LLMProvider, LLMResult
 
 
 class Tools(Protocol):
-    async def run(self, tool: str, *, path: str = "") -> ToolResult: ...
+    async def run(self, tool: str, *, path: str = "", query: str = "") -> ToolResult: ...
 
 
 @dataclass
@@ -73,15 +73,16 @@ async def investigate(
 
         started = time.monotonic()
         path = decision.path.strip() if decision.action == "get_file" else ""
-        key = (decision.action, path)
+        query = decision.query.strip() if decision.action == "search_repository" else ""
+        key = (decision.action, path or query)
         if key in first_step_for:
-            arguments = {"path": path} if decision.action == "get_file" else {}
+            arguments = {"path": path} if path else ({"query": query} if query else {})
             result = ToolResult(
                 decision.action, arguments, f"Already provided in step {first_step_for[key]}; see the result above.",
                 ok=False, error="duplicate_request",
             )
         else:
-            result = await tools.run(decision.action, path=path)
+            result = await tools.run(decision.action, path=path, query=query)
             first_step_for[key] = step
 
         record = ToolCallRecord(
