@@ -240,7 +240,11 @@ Then open **https://your-server/investigations** and log in.
 - One page per investigation: root cause, suggested fix, confidence (and why it was capped), every
   quote with a ✓ or ✗ verification mark, the files the AI opened, the error section of the log, and
   the commit.
-- Read-only, HTML-escaped, strict Content-Security-Policy, no caching, and only `https://` links.
+- A **quality page** at `/investigations/stats`: totals, average confidence, how much evidence was
+  fully verified, answers reused and the time that saved, and the correct/wrong tally.
+- A **"was this right?"** button on each investigation, so quality is measured rather than assumed.
+- HTML-escaped, strict Content-Security-Policy, no caching, only `https://` links. The feedback vote is
+  the only form on the site and is protected with a CSRF token; retrying stays in the CLI.
 
 **Command line**
 
@@ -254,7 +258,7 @@ docker exec devinvestigator python -m app.cli queue OWNER/REPO RUN_ID  # investi
 
 `RUN_ID` is the number at the end of a run's URL: `.../actions/runs/RUN_ID`.
 
-**Not built yet:** GitHub comments and Slack messages. Results live in the database and on the page.
+**Not built yet:** Slack messages. GitHub comments are described below.
 
 ---
 
@@ -275,6 +279,40 @@ PUBLIC_BASE_URL=https://your-server        # adds a link back to the full invest
   to a branch. No other endpoint is ever called.
 - **One comment per investigation.** The comment URL is stored, and a failed notification is recorded
   on the investigation without losing the result.
+
+## Repeated failures
+
+The same failure is not investigated twice. Each one gets a fingerprint from the repository, workflow,
+failed step and the first error lines, with numbers, versions, commit hashes and paths normalised away:
+
+- a match reuses the previous answer in about **one second, with no model call**;
+- the comment and the page warn *"This failure has happened 4 times recently"*, which is how a flaky
+  test or an unstable dependency shows itself.
+
+```ini
+REUSE_PREVIOUS_RESULTS=true
+REUSE_WITHIN_DAYS=30
+```
+
+## Team rules: known failures answered instantly
+
+Put a `.devinvestigator.yml` in the repository being investigated, and failures your team already
+understands are answered from it — no model, no cost, the same answer every time:
+
+```yaml
+rules:
+  - name: Test database was not ready
+    match: "ECONNREFUSED"
+    category: infrastructure_failure
+    root_cause: The job could not reach the test database container.
+    fix: Re-run the job; if it repeats, add a health check to the service in the workflow.
+    confidence: 0.85
+```
+
+`examples/devinvestigator.yml` has three ready-made rules. The matched log line becomes the evidence, so
+it goes through the same verification as a model's answer, and rule confidence is capped at 0.9. Broken
+YAML or a broken rule is skipped rather than fatal. Order: **team rules → reusable previous answer → AI**.
+Switch off with `USE_REPOSITORY_RULES=false`.
 
 ## Adding more repositories
 
@@ -297,6 +335,8 @@ The code supports it, but it has only been tested with unit tests, not against r
 ```
 AI asks for evidence ──► only these read-only tools:
                           · get_file                    (a file at the failing commit)
+                          · search_repository           (find where something appears)
+                          · get_workflow_file           (the workflow that failed)
                           · get_previous_successful_run (the last run that passed)
                           · compare_commits             (what changed since then)
                          ▼
@@ -434,12 +474,13 @@ uv pip install --python .venv/bin/python -r requirements-dev.txt
 ## Status
 
 **Working:** GitHub Actions webhook · read-only evidence collection · error extraction from logs ·
-local or API AI · agent with three tools · quote verification · confidence limits · automatic
-investigation of every failure · stored history · web page · CLI.
+local or API AI · agent with five read-only tools · quote verification · confidence limits · automatic
+investigation of every failure · stored history · repeated-failure reuse · team rules · GitHub comments ·
+web page with a quality view and feedback · CLI.
 
-**Not built yet:** GitHub comments and Slack notifications · GitLab and Jenkins · database migrations
-(schema changes need care on upgrade) · data retention (evidence grows forever) · repository allowlist ·
-PostgreSQL is supported but not yet tested in production.
+**Not built yet:** Slack notifications · GitLab and Jenkins · full database migrations (new columns are
+added automatically, anything else is not) · data retention (evidence grows forever) · repository
+allowlist · PostgreSQL is supported but not yet tested in production.
 
 **Known limits:** one investigation at a time (35–100 s each with a local model); a shared GPU can
 slow investigations enough to time out; GitHub App authentication is untested against real GitHub.
