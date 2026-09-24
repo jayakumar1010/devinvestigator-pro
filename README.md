@@ -1,305 +1,361 @@
-# DevInvestigator
+# 🔎 DevInvestigator
 
-**When a GitHub Actions pipeline fails, DevInvestigator investigates it automatically and tells your
-team what broke and how to fix it.** It reads the failed job's log, opens the relevant source files,
-compares against the last successful run, and writes a root cause with a suggested fix.
+**Your pipeline failed. Know why in two minutes, not two hours.**
 
-It runs on one Linux server with Docker. No Kubernetes. The AI can be a **local model** (your GPU, so
-nothing leaves your server) or an **API model** (no GPU needed).
+When a GitHub Actions run fails, DevInvestigator investigates it by itself: it reads the failing job's
+log, opens the code at the broken commit, compares against the last run that passed, then posts the
+root cause and the fix as a comment on your commit or pull request.
 
-A real result from the test repository:
+It runs on **one Linux server with Docker**. No Kubernetes. The AI can be a **local model** on your GPU
+(nothing leaves your server) or an **API model** (no GPU needed).
 
-> **Root cause:** `applyDiscount` in `lib/discount.js` subtracts the discount as a flat amount instead of a
-> percentage. On line 6 it does `return price - percent;`, so `applyDiscount(200, 10)` returns 190 instead of 180.
-> **Suggested fix:** change line 6 to `return price * (1 - percent / 100);`
-> **Category:** test_failure  **Confidence:** 0.95  **Evidence:** 2 of 2 quotes verified
+> **Real result from the test repository**
+>
+> **Root cause:** There is a version mismatch between `react` and `react-dom` in `web/package.json`. The project
+> specifies react@17.0.2 and react-dom@18.3.1, but react-dom@18.3.1 requires a peer dependency of react@^18.3.1.
+> **Suggested fix:** Update `react` to 18.3.1 to match what react-dom requires.
+> **Category:** dependency_failure · **Confidence:** 0.95 (direct) · **Evidence:** 4 of 4 quotes verified · **Time:** 109s
 
-DevInvestigator **only suggests**. It never changes your code, never re-runs pipelines, and only ever
-reads from GitHub.
+DevInvestigator **only suggests**. It never changes code, never re-runs pipelines, and reads from
+GitHub through GET requests only. The single exception is posting a comment, which is off by default
+and uses its own separate token.
+
+---
+
+## Contents
+
+| | |
+|---|---|
+| [How it works](#how-it-works) | The whole flow, and how an answer is produced |
+| [What makes it different](#what-makes-it-different) | Verified evidence, honest confidence, read-only |
+| [Setup](#setup-step-by-step) | Nine steps from clone to first comment |
+| [Where results appear](#where-the-results-appear) | Comment, web page, quality page, CLI |
+| [Features](#features) | What exists today, with measured numbers |
+| [Configuration](#configuration) | Every setting, grouped |
+| [Safety](#safety) | What the AI may and may not do |
+| [Troubleshooting](#troubleshooting) | Real problems and their fixes |
+| [Status & roadmap](#status--roadmap) | Built, not built, known limits |
 
 ---
 
 ## How it works
 
 ```
- Developer pushes code
-          │
-          ▼
- GitHub Actions pipeline runs  ──────────────►  passes ✓  (nothing happens)
-          │
-          │ fails ✗
-          ▼
- GitHub sends a webhook  ──►  https://your-server/webhooks/github
-                                        │
-                  ┌─────────────────────▼──────────────────────────────┐
-                  │  DevInvestigator (one Docker container)            │
-                  │                                                    │
-                  │  1. Check the signature, queue the investigation   │
-                  │  2. Collect evidence from GitHub (read-only):      │
-                  │        failed jobs · failed step · job log         │
-                  │        commit · changed files                      │
-                  │  3. Cut the error section out of the log           │
-                  │  4. AI agent investigates, and may ask for more:   │
-                  │        read a file · find the last successful run  │
-                  │        compare the commits                         │
-                  │  5. Check every quote the AI gives against the     │
-                  │     real evidence, then cap the confidence         │
-                  │  6. Save the result                                │
-                  └─────────────────────┬──────────────────────────────┘
-                                        │
-                     ┌──────────────────┴──────────────────┐
-                     ▼                                     ▼
-        Web page /investigations                 CLI: app.cli list / show
-        (root cause, fix, evidence)              (same data in JSON)
+   Developer pushes code
+            │
+            ▼
+   GitHub Actions runs ───────────────► passes ✓  nothing happens
+            │
+            │ fails ✗
+            ▼
+   GitHub webhook  ──►  POST /webhooks/github        (signature checked, 202 in milliseconds)
+            │
+            ▼
+   ┌──────────────────── devinvestigator container ────────────────────┐
+   │                                                                   │
+   │   queue (the database)  ──►  worker, one investigation at a time  │
+   │                                      │                            │
+   │                                      ▼                            │
+   │   1. Collect evidence (read-only GitHub API)                      │
+   │        failed jobs · failed step · job log · commit · files       │
+   │                                      │                            │
+   │   2. Cut the error section out of the log (134 lines → 13)        │
+   │                                      │                            │
+   │   3. Answer it — cheapest route first:                            │
+   │        ├─ team rule matches?      → instant, no AI                │
+   │        ├─ same failure as before? → reuse, no AI                  │
+   │        └─ otherwise               → AI agent investigates         │
+   │                                      │                            │
+   │   4. Check the answer                                             │
+   │        every quote verified · schema enforced · confidence capped │
+   │                                      │                            │
+   │   5. Store it, then notify                                        │
+   └──────────────────────────────────────┬────────────────────────────┘
+                                          │
+              ┌───────────────────────────┼───────────────────────────┐
+              ▼                           ▼                           ▼
+     GitHub comment              Web page + quality           CLI (list / show)
+   on the commit or PR          /investigations                app.cli
 ```
 
-One investigation takes about 35–100 seconds with a local model, and they run one at a time.
+### How an answer is produced
+
+```
+                      ┌─────────────────────────┐
+   failure evidence ──►   Team rule matches?     │──yes──► answer from the rule    ~1 s   free
+                      └───────────┬─────────────┘
+                                  │ no
+                      ┌───────────▼─────────────┐
+                      │  Same failure as before? │──yes──► reuse previous answer   ~1 s   free
+                      └───────────┬─────────────┘
+                                  │ no
+                      ┌───────────▼─────────────┐
+                      │      AI agent            │
+                      │  may ask for more:       │
+                      │   · get_file             │
+                      │   · search_repository    │──────► fresh answer        35–110 s
+                      │   · get_workflow_file    │
+                      │   · previous successful  │
+                      │   · compare_commits      │
+                      └──────────────────────────┘
+```
+
+### Measured on the test repository
+
+| Run | Route | Time | AI calls | Result |
+|---|---|---|---|---|
+| CI #1 | AI agent (3 tool calls) | **109 s** | 5 | Correct root cause, 4/4 quotes verified |
+| CI #2 | Reused (same failure) | **1.27 s** | 0 | Same answer, comment posted |
+| CI #3 | Reused (same failure) | **1.62 s** | 0 | Same answer, comment posted |
 
 ---
 
-## What you need
+## What makes it different
+
+Most "AI reads your logs" tools stop at the answer. The work here is in **not trusting the answer**:
+
+| | How it works | Why it matters |
+|---|---|---|
+| **Every quote is verified** | Each line the AI cites is checked word-for-word against the log or file it was actually given | An AI that invents a log line is worse than useless; invented quotes are flagged, not shown |
+| **Confidence enforced in code** | Never 1.0. At most 0.89 when the cause is inferred or any quote failed verification. 0.5 when the evidence is insufficient | The model cannot talk its way past the limits |
+| **Read-only by design** | Every GitHub call is a GET; a test asserts it | The tool cannot break your repository |
+| **Local AI option** | Ollama on your GPU | Your logs and code never leave your server |
+| **Untrusted log text** | Log and file content is fenced and marked untrusted | Instructions hidden in a log cannot steer the investigation |
+| **Cheapest route first** | Team rule → reuse → AI | Known and repeated failures cost nothing |
+
+---
+
+## Setup, step by step
+
+### Requirements
 
 | | |
 |---|---|
-| A Linux server | with Docker and Docker Compose |
-| A public HTTPS address | GitHub must be able to reach it (a domain, reverse proxy, or a tunnel) |
-| A GitHub token | read-only, for the repositories you want investigated |
-| An AI | **either** a GPU with about 20 GB free (local model) **or** an Anthropic / OpenAI API key |
+| Linux server | Docker + Docker Compose |
+| Public HTTPS address | GitHub must reach it (domain, reverse proxy, or tunnel) |
+| GitHub token | read-only, for the repositories you want investigated |
+| AI | a GPU with ~20 GB free **or** an Anthropic / OpenAI API key |
 
----
-
-## Step-by-step setup
-
-### Step 1 — Get the code
+### 1. Get the code
 
 ```bash
-git clone <your-repository-url> devinvestigator
+git clone git@github.com:jayakumar1010/devinvestigator-pro.git devinvestigator
 cd devinvestigator
 cp .env.example .env
 ```
 
-Everything below is edits to `.env`. It holds your secrets and is never committed.
-
-### Step 2 — Create the webhook secret
-
-This is a password shared between GitHub and DevInvestigator, so nobody else can send it fake failures.
+### 2. Webhook secret
 
 ```bash
 openssl rand -hex 32
 ```
-
-Put it in `.env`:
-
 ```ini
-GITHUB_WEBHOOK_SECRET=paste-the-value-here
+GITHUB_WEBHOOK_SECRET=<paste>
 ```
 
-### Step 3 — Create a GitHub token (read-only)
+### 3. Read-only GitHub token
 
-GitHub → **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**
+GitHub → **Settings → Developer settings → Personal access tokens → Fine-grained tokens**
 
 | Field | Value |
 |---|---|
-| Repository access | Only the repositories you want investigated |
-| Permissions | **Actions: Read-only** and **Contents: Read-only** (Metadata is added automatically) |
-
-*Contents: Read-only* is what lets the AI open source files such as `lib/discount.js`. Add it to `.env`:
+| Repository access | Only the repositories to investigate |
+| Permissions | **Actions: Read-only**, **Contents: Read-only** |
 
 ```ini
 GITHUB_TOKEN=github_pat_...
 ```
 
-### Step 4 — Choose the AI
+*Contents: Read-only* is what lets the agent open source files.
 
-**Option A — you have a GPU (free, private: nothing leaves your server)**
+### 4. Choose the AI
 
-If Ollama already runs on the host:
-
+**With a GPU** — free and private:
 ```ini
 LLM_PROVIDER=ollama
 OLLAMA_MODEL=hf.co/ggml-org/gemma-4-31b-it-GGUF:Q4_K_M
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 ```
 
-Or let DevInvestigator run its own Ollama in Docker on one GPU:
-
+Or let DevInvestigator run its own Ollama on one GPU:
 ```bash
-# .env:  OLLAMA_BASE_URL=http://ollama:11434   and   DEVINVESTIGATOR_GPU=0
+# .env: OLLAMA_BASE_URL=http://ollama:11434  and  DEVINVESTIGATOR_GPU=0
 docker compose --profile local-ai up -d
 docker compose --profile local-ai exec ollama ollama pull hf.co/ggml-org/gemma-4-31b-it-GGUF:Q4_K_M
 ```
 
-> ⚠️ Give the model a GPU with enough free memory. If it doesn't fit, it runs partly on the CPU,
-> becomes many times slower, and investigations time out.
+> ⚠️ The model must fit in GPU memory. If it spills to the CPU it becomes many times slower and
+> investigations time out.
 
-**Option B — no GPU (uses an API, costs money per investigation)**
-
+**Without a GPU** — costs money per investigation:
 ```ini
 LLM_PROVIDER=anthropic
 ANTHROPIC_API_KEY=sk-ant-...
 ```
+or `LLM_PROVIDER=openai` with `OPENAI_API_KEY`, or `vllm` with `OPENAI_BASE_URL`.
 
-or
-
-```ini
-LLM_PROVIDER=openai
-OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o
-```
-
-With an API provider, your logs and code snippets are sent to that provider. With `ollama` they never
-leave your server. `vllm` + `OPENAI_BASE_URL` works too, for your own OpenAI-compatible server.
-
-### Step 5 — Set a password for the web page
+### 5. Web page password
 
 ```bash
 openssl rand -base64 24
 ```
-
 ```ini
 DASHBOARD_USERNAME=admin
-DASHBOARD_PASSWORD=paste-the-value-here
+DASHBOARD_PASSWORD=<paste>
 ```
-
 Without a password the page stays switched off.
 
-### Step 6 — Start it
+### 6. Start
 
 ```bash
 docker compose up -d --build
 curl http://localhost:8012/health          # {"status":"healthy"}
-docker compose logs -f devinvestigator     # Ctrl+C to stop watching
+docker compose logs -f devinvestigator
 ```
 
-The startup log confirms your configuration:
-
+The startup log confirms the configuration:
 ```
 GitHub integration: auth=token webhook_secret_configured=True
 Investigations: database=sqlite auto_analyze=True mode=agent model=...
 Web page /investigations: enabled (HTTP Basic auth)
 ```
 
-### Step 7 — Make it reachable from the internet
+### 7. Make it reachable
 
-GitHub has to reach your server over **HTTPS**. Put a reverse proxy (nginx, Caddy, Traefik) or a tunnel
-in front of port `8012`. Check it from outside:
+GitHub must reach the server over **HTTPS**. Put nginx, Caddy, Traefik or a tunnel in front of port
+`8012`. Only `/webhooks/github` has to be public.
 
 ```bash
 curl https://your-server/health
 ```
 
-Only `/webhooks/github` has to be public. The web page can stay internal if you prefer.
+### 8. Add the webhook
 
-### Step 8 — Add the webhook in GitHub
-
-Repository → **Settings → Webhooks → Add webhook**
+Repository (or organization) → **Settings → Webhooks → Add webhook**
 
 | Field | Value |
 |---|---|
 | Payload URL | `https://your-server/webhooks/github` |
 | Content type | `application/json` |
-| Secret | the value from Step 2 |
-| SSL verification | Enable |
-| Which events? | *Let me select individual events* → untick everything → tick **Workflow runs** only |
-| Active | ✓ |
+| Secret | the value from step 2 |
+| Which events? | *Let me select individual events* → **Workflow runs** only |
 
-Click **Add webhook**. GitHub immediately sends a test "ping".
+### 9. Check
 
-### Step 9 — Check it works
-
-Open the webhook → **Recent Deliveries**. The `ping` should show **200** with `{"status": "pong"}`.
+Webhook → **Recent Deliveries** → the ping should be **200** `{"status":"pong"}`.
 
 | Result | Meaning | Fix |
 |---|---|---|
 | ✅ 200 | Working | — |
-| ❌ 401 | Secret mismatch | Use the same value in GitHub and `.env`, then `docker compose up -d` |
+| ❌ 401 | Secret mismatch | Same value in GitHub and `.env`, then `docker compose up -d` |
 | ❌ 405 | Wrong URL | The path must end with `/webhooks/github` |
-| ❌ 503 | No secret loaded | Set `GITHUB_WEBHOOK_SECRET`, then `docker compose up -d` |
-| Nothing | GitHub can't reach you | Check DNS, HTTPS and firewall (Step 7) |
+| ❌ 503 | No secret loaded | `.env` is read at startup only |
+| Nothing | GitHub cannot reach you | Check DNS, HTTPS, firewall |
 
-Now let a pipeline fail. After about a minute:
-
+Then let a pipeline fail and watch:
 ```bash
 docker exec devinvestigator python -m app.cli list
 ```
 
-```
-  ID  STATUS     CREATED (UTC)     RUN                                 CATEGORY             CONF
-   1  completed  2026-09-22 07:09  acme/frontend / Unit tests #1       test_failure         0.95
+### 10. Optional: comment on GitHub
+
+```ini
+NOTIFY_GITHUB_COMMENTS=true
+GITHUB_COMMENT_TOKEN=github_pat_...    # a second token, comments only
+PUBLIC_BASE_URL=https://your-server
 ```
 
-Then open **https://your-server/investigations** and log in.
+The comment token needs **Pull requests: write**, plus **Contents: write** only if you also want
+comments on commits pushed straight to a branch.
 
 ---
 
 ## Where the results appear
 
-**Web page** — `https://your-server/investigations`
+### 1. GitHub comment
 
-- A list of failures with status, category and confidence.
-- One page per investigation: root cause, suggested fix, confidence (and why it was capped), every
-  quote with a ✓ or ✗ verification mark, the files the AI opened, the error section of the log, and
-  the commit.
-- A **quality page** at `/investigations/stats`: totals, average confidence, how much evidence was
-  fully verified, answers reused and the time that saved, and the correct/wrong tally.
-- A **"was this right?"** button on each investigation, so quality is measured rather than assumed.
-- HTML-escaped, strict Content-Security-Policy, no caching, only `https://` links. The feedback vote is
-  the only form on the site and is protected with a CSRF token; retrying stays in the CLI.
+```markdown
+## 🔎 DevInvestigator: `CI` #1 failed
+**Failed stage:** `install / Install dependencies`
 
-**Command line**
+### Root cause
+There is a version mismatch between 'react' and 'react-dom' in web/package.json …
 
-```bash
-docker exec devinvestigator python -m app.cli list                     # recent investigations
-docker exec devinvestigator python -m app.cli show 1                   # one result as JSON
-docker exec devinvestigator python -m app.cli show 1 --evidence        # include all collected evidence
-docker exec devinvestigator python -m app.cli retry 1                  # investigate it again
-docker exec devinvestigator python -m app.cli queue OWNER/REPO RUN_ID  # investigate an older failed run
+### Suggested fix
+Update the version of 'react' in web/package.json to 18.3.1 …
+
+**Category:** `dependency_failure` · **Confidence:** 0.95 (direct) · **Evidence:** 4/4 verified
+
+<details><summary>Evidence (checked against the real logs and files)</summary>
+  job log · npm error code ERESOLVE
+  web/package.json line 6-7 · "react": "17.0.2", "react-dom": "18.3.1"
+</details>
 ```
 
-`RUN_ID` is the number at the end of a run's URL: `.../actions/runs/RUN_ID`.
+### 2. Web page — `/investigations`
 
-**Not built yet:** Slack messages. GitHub comments are described below.
+| Page | Shows |
+|---|---|
+| List | Every investigation: status, repository, workflow, category, confidence, duration |
+| Detail | Root cause, fix, confidence with the reason for any cap, evidence with ✓/✗, files the agent opened, the error section of the log, the commit, a repeat warning |
+| **Quality** `/investigations/stats` | Totals, average confidence, verified-evidence ratio, answers reused and time saved, correct/wrong feedback tally, breakdowns by status, category and model |
+
+Each investigation has a **"Was this answer right?"** button, so quality is measured, not assumed.
+
+### 3. Command line
+
+| Command | What it does |
+|---|---|
+| `app.cli list` | Recent investigations |
+| `app.cli show ID` | One result as JSON (`--evidence` for everything collected) |
+| `app.cli comment-preview ID` | The exact GitHub comment, without posting |
+| `app.cli queue OWNER/REPO RUN_ID` | Investigate an older failed run |
+| `app.cli retry ID` | Investigate again |
+| `app.cli preview OWNER/REPO RUN_ID` | Exactly what would be sent to the AI, no AI call |
+| `app.cli analyze OWNER/REPO RUN_ID` | One-shot analysis, no tools |
+| `app.cli investigate OWNER/REPO RUN_ID` | Agent investigation (`--show-transcript` for every message) |
+
+All are run as `docker exec devinvestigator python -m app.cli …`
 
 ---
 
-## Telling developers (GitHub comments)
+## Features
 
-DevInvestigator can post the root cause and suggested fix as a comment on the failed **pull request**,
-or on the **commit** when someone pushed straight to a branch.
+### Evidence collected (all read-only)
 
-```ini
-NOTIFY_GITHUB_COMMENTS=true
-GITHUB_COMMENT_TOKEN=github_pat_...        # a second token, used only for comments
-PUBLIC_BASE_URL=https://your-server        # adds a link back to the full investigation
-```
+| Source | Collected | Limits |
+|---|---|---|
+| Workflow run | number, attempt, event, branch, commit, timestamps | — |
+| Jobs | jobs and steps of that attempt | 100/page, 10 pages |
+| Job logs | the failing section, cut out with the `##[error]` marker | 200 KB tail → 120 lines / 8000 chars |
+| Commit | message, author, changed files | first 50 files in the prompt |
+| Files *(agent)* | any file or directory at the failing commit | 12 000 chars |
+| Code search *(agent)* | files matching a term | 10 results |
+| Workflow file *(agent)* | the failing workflow definition | — |
+| Previous successful run *(agent)* | last passing run of the same workflow and branch | 20 runs checked |
+| Commit comparison *(agent)* | commits, files and diffs since that run | 30 commits, 15 000 chars |
 
-- **Off by default.** Commenting is the only write this tool can perform.
-- **Separate token.** The investigation token stays read-only. The comment token needs
-  *Pull requests: write*; add *Contents: write* only if you want comments on commits pushed directly
-  to a branch. No other endpoint is ever called.
-- **One comment per investigation.** The comment URL is stored, and a failed notification is recorded
-  on the investigation without losing the result.
+If one source fails (expired logs, a 404), it is recorded in `errors` and the rest is still collected.
 
-## Repeated failures
+### Answer routes
 
-The same failure is not investigated twice. Each one gets a fingerprint from the repository, workflow,
-failed step and the first error lines, with numbers, versions, commit hashes and paths normalised away:
+| Mode | When | Cost | Time |
+|---|---|---|---|
+| `rule` | A team rule in `.devinvestigator.yml` matches | free | ~1 s |
+| `reused` | The same failure was investigated before | free | ~1 s |
+| `agent` | Default: the AI may request more evidence | 4–6 AI calls | 35–110 s |
+| `single_pass` | `ANALYSIS_MODE=single_pass`: one call, no tools | 1 AI call | 15–60 s |
 
-- a match reuses the previous answer in about **one second, with no model call**;
-- the comment and the page warn *"This failure has happened 4 times recently"*, which is how a flaky
-  test or an unstable dependency shows itself.
+### Repeated failures
 
-```ini
-REUSE_PREVIOUS_RESULTS=true
-REUSE_WITHIN_DAYS=30
-```
+Each failure gets a fingerprint from repository + workflow + failed step + the first error lines, with
+numbers, versions, commit hashes and paths normalised away. A match reuses the previous answer and the
+comment says *"This failure has happened 4 times recently"* — which is how a flaky test shows itself.
 
-## Team rules: known failures answered instantly
-
-Put a `.devinvestigator.yml` in the repository being investigated, and failures your team already
-understands are answered from it — no model, no cost, the same answer every time:
+### Team rules
 
 ```yaml
+# .devinvestigator.yml in the repository being investigated
 rules:
   - name: Test database was not ready
     match: "ECONNREFUSED"
@@ -309,102 +365,130 @@ rules:
     confidence: 0.85
 ```
 
-`examples/devinvestigator.yml` has three ready-made rules. The matched log line becomes the evidence, so
-it goes through the same verification as a model's answer, and rule confidence is capped at 0.9. Broken
-YAML or a broken rule is skipped rather than fatal. Order: **team rules → reusable previous answer → AI**.
-Switch off with `USE_REPOSITORY_RULES=false`.
+The matched log line becomes the evidence, so it passes the same verification. Rule confidence is capped
+at 0.9. Broken YAML or a broken rule is skipped, never fatal. Three ready-made rules are in
+`examples/devinvestigator.yml`.
 
-## Adding more repositories
+### AI providers
 
-Nothing changes inside the other repositories. No workflow edits.
+| `LLM_PROVIDER` | GPU | Evidence leaves your server | Settings |
+|---|---|---|---|
+| `ollama` (default) | Yes | No | `OLLAMA_MODEL`, `OLLAMA_BASE_URL` |
+| `anthropic` | No | Yes, to Anthropic | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` |
+| `openai` | No | Yes, to OpenAI | `OPENAI_API_KEY`, `OPENAI_MODEL` |
+| `vllm` | Your own server | No | `OPENAI_BASE_URL`, `OPENAI_MODEL` |
 
-1. **Give the token access:** add the repository to your fine-grained token (same read-only permissions).
-2. **Add a webhook,** exactly as in Step 8.
-
-For many repositories in one organization, add **one organization webhook**
-(Organization → Settings → Webhooks) instead of one per repository. It covers every repository,
-including new ones.
-
-For many organizations, a **GitHub App** is cleaner (`GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY_PATH`).
-The code supports it, but it has only been tested with unit tests, not against real GitHub.
+The investigation code only uses the `LLMProvider` interface in `app/llm/base.py`, so a provider can be
+swapped without touching any investigation logic.
 
 ---
 
-## What the AI is allowed to do
+## Safety
 
 ```
-AI asks for evidence ──► only these read-only tools:
-                          · get_file                    (a file at the failing commit)
-                          · search_repository           (find where something appears)
-                          · get_workflow_file           (the workflow that failed)
-                          · get_previous_successful_run (the last run that passed)
-                          · compare_commits             (what changed since then)
-                         ▼
-AI answers ──► checked before you ever see it:
-                · every quote must appear word-for-word in the evidence sent
-                · the answer must match a fixed schema, or it is rejected
-                · confidence is capped in code: never 1.0; at most 0.89 when the
-                  cause is only inferred or a quote failed verification
+The AI may ask for                     The AI can never
+──────────────────────                 ──────────────────────────────
+· get_file                             · push code
+· search_repository                    · re-run or cancel a workflow
+· get_workflow_file                    · change a repository setting
+· get_previous_successful_run          · reach another repository
+· compare_commits                      · act on instructions hidden in a log
+  (all GET requests)
 ```
 
-- **Read-only, always.** Every GitHub call is a GET. DevInvestigator cannot push code, re-run
-  workflows, comment, or change anything.
-- **Scoped to the failure.** The AI chooses only a tool and a file path; the repository, commit and
-  branch come from the failed run, so it cannot reach other repositories.
-- **Log text is untrusted.** Instructions hidden in a log or source file are ignored.
-- **Secrets never leak into output.** Tokens are masked, and log-download URLs are kept out of logs
-  and error messages.
+| Protection | How |
+|---|---|
+| Webhook authenticity | HMAC-SHA256 over the raw body, constant-time compare; no secret → 503 |
+| Read-only investigation | Every call is a GET; a test enforces it |
+| Comment writing | Separate token, off by default, two comment endpoints only |
+| Scope | The model picks only a tool and a path; repository, commit and branch come from the failed run |
+| Path safety | `..` and backslashes refused |
+| Prompt injection | Log and file content fenced and marked untrusted; it cannot close its own block |
+| Secrets | Tokens masked, signed log URLs never logged, `.env` never in the image |
+| Web page | Password-protected, HTML-escaped, strict CSP, no caching, CSRF token on the only form |
+| API docs | `/docs` and `/openapi.json` off by default |
+
+### Confidence policy, enforced in code
+
+| Situation | Maximum |
+|---|---|
+| A log line proves the cause | **0.95** (never 1.0) |
+| The cause is inferred, or a quote failed verification | **0.89** |
+| Evidence insufficient, or category `unknown` | **0.50** |
+| Answer from a team rule | **0.90** |
 
 ---
 
-## Configuration reference
+## Configuration
 
-Everything is set in `.env`. Full list with comments: `.env.example`.
+Everything lives in `.env`. Full list with comments: `.env.example`.
 
 **GitHub**
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GITHUB_WEBHOOK_SECRET` | — | **Required.** Without it every delivery is rejected with 503 |
+| `GITHUB_WEBHOOK_SECRET` | — | **Required.** Without it every delivery is rejected |
 | `GITHUB_TOKEN` | — | Read-only fine-grained token |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_PATH` | — | GitHub App instead of a token |
 | `GITHUB_API_URL` | `https://api.github.com` | Change for GitHub Enterprise Server |
-| `GITHUB_LOG_MAX_BYTES` | `200000` | How much of each job log is kept |
+| `GITHUB_LOG_MAX_BYTES` | `200000` | Log kept per failed job |
 | `GITHUB_MAX_FAILED_JOB_LOGS` | `5` | Logs fetched when many jobs fail |
 
 **AI**
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LLM_PROVIDER` | `ollama` | `ollama`, `anthropic`, `openai` or `vllm` |
-| `LLM_MODEL` | — | Overrides the provider's model below |
-| `OLLAMA_MODEL`, `OLLAMA_BASE_URL` | gemma-4-31b, host | Local model |
-| `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | —, `claude-opus-5` | Anthropic |
-| `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL` | —, `gpt-4o`, — | OpenAI or any compatible server |
-| `LLM_TIMEOUT_SECONDS` | `300` | Limit for one AI call |
-| `LLM_MAX_RETRIES` | `2` | Retries for connection errors and rate limits |
+| `LLM_PROVIDER` | `ollama` | `ollama`, `anthropic`, `openai`, `vllm` |
+| `LLM_MODEL` | — | Overrides the provider's model |
+| `LLM_TIMEOUT_SECONDS` | `300` | One AI call |
+| `LLM_MAX_RETRIES` | `2` | Connection errors, rate limits, 5xx |
+| `OLLAMA_MODEL` / `OLLAMA_BASE_URL` | gemma-4-31b / host | Local model |
 | `OLLAMA_NUM_CTX` | `16384` | Context window; oversized prompts are refused, not truncated |
+| `OLLAMA_KEEP_ALIVE` | `2m` | Unload the model after use (shared GPUs) |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | — / `claude-opus-5` | Anthropic |
+| `OPENAI_API_KEY` / `OPENAI_MODEL` / `OPENAI_BASE_URL` | — / `gpt-4o` / — | OpenAI or compatible |
 | `DEVINVESTIGATOR_GPU` | `0` | GPU for the bundled Ollama container |
 
 **Investigations**
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DATABASE_URL` | SQLite on a volume | `postgresql+asyncpg://...` for PostgreSQL |
+| `DATABASE_URL` | SQLite on a volume | `postgresql+asyncpg://…` for PostgreSQL |
 | `AUTO_ANALYZE` | `true` | `false` = collect evidence, skip the AI |
-| `ANALYSIS_MODE` | `agent` | `single_pass` = one AI call, no tools |
-| `INVESTIGATION_TIMEOUT_SECONDS` | `900` | Limit for one whole investigation |
-| `AGENT_MAX_TOOL_CALLS` | `6` | How much evidence the AI may request |
+| `ANALYSIS_MODE` | `agent` | `single_pass` = one call, no tools |
+| `INVESTIGATION_TIMEOUT_SECONDS` | `900` | One whole investigation |
+| `AGENT_MAX_TOOL_CALLS` | `6` | Evidence the AI may request |
+| `AGENT_TOOL_BUDGET_CHARS` | `24000` | Total tool output added to the prompt |
+| `USE_REPOSITORY_RULES` / `RULES_FILE` | `true` / `.devinvestigator.yml` | Team rules |
+| `REUSE_PREVIOUS_RESULTS` / `REUSE_WITHIN_DAYS` | `true` / `30` | Repeated failures |
 
-**Web page and server**
+**Notifications and web page**
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DASHBOARD_PASSWORD` | — | **Required to enable the page** |
+| `NOTIFY_GITHUB_COMMENTS` | `false` | Post the answer as a comment |
+| `GITHUB_COMMENT_TOKEN` | — | Separate write token, comments only |
+| `PUBLIC_BASE_URL` | — | Link back to the investigation |
+| `DASHBOARD_PASSWORD` | — | **Required to enable the web page** |
 | `DASHBOARD_USERNAME` | `admin` | Login name |
-| `ENABLE_API_DOCS` | `false` | `/docs` and `/openapi.json` |
+| `ENABLE_API_DOCS` | `false` | `/docs`, `/openapi.json` |
 | `DEVINVESTIGATOR_PORT` | `8012` | Host port |
 | `DEVINVESTIGATOR_SUBNET` | `10.211.11.0/24` | Docker network subnet |
+
+---
+
+## Failure handling
+
+| Situation | What happens |
+|---|---|
+| GitHub 404 / 401 / 403 | Recorded per source; the rest of the evidence is still collected |
+| Job logs expired (410) | Noted on that job, other evidence still used |
+| No failed jobs | Stated in the prompt; the AI answers `unknown` rather than guessing |
+| Huge logs | 200 KB tail → error section → prompt refused if it would exceed the context window |
+| AI fails or times out | Investigation marked `failed` with the reason; evidence kept for a retry |
+| Duplicate webhook delivery | Recognised, answered `duplicate`, never investigated twice |
+| Container restarts mid-investigation | Re-queued at startup and run again |
+| Comment cannot be posted | Result already saved; the error is recorded on the investigation |
 
 ---
 
@@ -412,21 +496,17 @@ Everything is set in `.env`. Full list with comments: `.env.example`.
 
 | Problem | Cause | Fix |
 |---|---|---|
-| Webhook shows **401** | Secret differs | Same value in GitHub and `.env`, then `docker compose up -d` |
-| Webhook shows **503** | Secret not loaded | `.env` is only read at startup: `docker compose up -d` |
-| Webhook shows **405** | URL missing the path | Use `.../webhooks/github` |
-| Investigation `failed`, "ReadTimeout" | Model too slow, usually a busy GPU | Free the GPU, use a smaller model, or switch to an API provider |
-| Investigation `failed`, "404" | Token can't read that repo | Add the repository to the token |
-| Evidence has errors but the run finished | One source failed (e.g. expired logs) | Normal; the rest is still collected |
-| Web page returns **503** | No password set | Set `DASHBOARD_PASSWORD`, then `docker compose up -d` |
-| Results look stale | The page auto-refreshes only while work is queued | Reload |
-| Nothing arrives at all | GitHub can't reach the server | Test `curl https://your-server/health` from outside |
-
-Useful commands:
+| Webhook **401** | Secret differs | Same value both sides, then `docker compose up -d` |
+| Webhook **503** | Secret not loaded | `.env` is read at startup only |
+| Webhook **405** | URL missing the path | Use `…/webhooks/github` |
+| `failed`, "ReadTimeout" | Model too slow, usually a busy GPU | Free the GPU, smaller model, or an API provider |
+| `failed`, "404" | Token cannot read that repository | Add the repository to the token |
+| Web page **503** | No password | Set `DASHBOARD_PASSWORD`, restart |
+| Comment not posted | Token lacks permission | *Pull requests: write*; *Contents: write* for commit comments |
+| Nothing arrives | GitHub cannot reach the server | `curl https://your-server/health` from outside |
 
 ```bash
-docker compose logs -f devinvestigator          # live logs
-docker compose ps                               # status and health
+docker compose logs -f devinvestigator     # live logs
 docker exec devinvestigator python -m app.cli list
 ```
 
@@ -436,51 +516,66 @@ docker exec devinvestigator python -m app.cli list
 
 ```
 app/
-├── api/            webhook and health endpoints
-├── core/           settings, logging, webhook signature check
+├── api/            webhook + health endpoints
+├── core/           settings, logging, webhook signature
 ├── integrations/
-│   └── github/     read-only GitHub client, auth, models, failure rules
-├── evidence/       collect evidence, cut the error section out of logs
-├── agent/          agent loop and its three read-only tools
-├── analysis/       prompt, output schema, quote checking, confidence policy
+│   └── github/     read-only client, auth, models, failure rules
+├── evidence/       collection, error extraction, failure fingerprint
+├── agent/          agent loop + five read-only tools
+├── analysis/       prompt, schema, quote verification, confidence, team rules
 ├── llm/            provider interface + ollama / anthropic / openai
+├── notifications/  GitHub comment rendering and posting
 ├── database/       models, session, queries (the queue lives here)
-├── web/            the web page (templates, views, auth)
-├── orchestrator.py the worker: queue → evidence → AI → stored result
+├── web/            web page, quality page, feedback
+├── orchestrator.py the worker: queue → evidence → rule/reuse/AI → store → notify
 └── cli.py          list, show, queue, retry, preview, analyze, investigate
 ```
-
-The AI layer is swappable: `app/analysis` and `app/agent` only use the `LLMProvider` interface in
-`app/llm/base.py`, so adding a provider never changes the investigation logic.
-
-**Development**
 
 ```bash
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -r requirements-dev.txt
-.venv/bin/pytest -q                                   # 232 tests, no network calls
-.venv/bin/uvicorn app.main:app --reload --port 8012   # run outside Docker
+.venv/bin/pytest -q                                   # 295 tests, no network calls
+.venv/bin/uvicorn app.main:app --reload --port 8012
 ```
 
-**Docker facts**
-
-- One container (plus an optional Ollama one), non-root user, healthcheck on `/health`.
-- Own network `devinvestigator_net`; host port `8012` → container `8000`.
-- Database on the volume `devinvestigator_data`, so results survive rebuilds.
-- Interrupted investigations are picked up again when the container restarts.
+**Docker:** one container (plus an optional Ollama one), non-root user, healthcheck, own network
+`devinvestigator_net`, host port `8012` → container `8000`, database on the volume
+`devinvestigator_data`. New database columns are added automatically at startup.
 
 ---
 
-## Status
+## Status & roadmap
 
-**Working:** GitHub Actions webhook · read-only evidence collection · error extraction from logs ·
-local or API AI · agent with five read-only tools · quote verification · confidence limits · automatic
-investigation of every failure · stored history · repeated-failure reuse · team rules · GitHub comments ·
-web page with a quality view and feedback · CLI.
+### Built
 
-**Not built yet:** Slack notifications · GitLab and Jenkins · full database migrations (new columns are
-added automatically, anything else is not) · data retention (evidence grows forever) · repository
-allowlist · PostgreSQL is supported but not yet tested in production.
+| Area | Detail |
+|---|---|
+| Trigger | GitHub Actions webhook, signature verified, duplicates recognised |
+| Evidence | Jobs, failed steps, logs, error extraction, commit, changed files |
+| AI | Local (Ollama) or API (Anthropic, OpenAI, vLLM), provider-independent core |
+| Agent | Five read-only tools, budgets, repeat-request guard |
+| Trust | Quote verification, schema enforcement, confidence ceilings |
+| Speed | Team rules and repeat reuse answer in ~1 second with no AI call |
+| Delivery | GitHub comment, web page, quality page, feedback, CLI |
+| Operations | Database queue, restart recovery, timeouts, additive column upgrades |
+| Tests | 295, no network calls |
 
-**Known limits:** one investigation at a time (35–100 s each with a local model); a shared GPU can
-slow investigations enough to time out; GitHub App authentication is untested against real GitHub.
+### Not built yet
+
+| Item | Why it matters |
+|---|---|
+| Slack notifications | Team channel alerts |
+| Full database migrations | New columns are added automatically; other changes are not |
+| Data retention | Logs are stored forever; the database grows |
+| Repository allowlist | Needed before sharing the webhook URL widely |
+| PostgreSQL testing | Supported in code, never run against a real server |
+| GitLab / Jenkins | Optional integrations |
+| Concurrency | One investigation at a time (right for a GPU, wasteful with an API) |
+
+### Known limits
+
+- One investigation at a time; 35–110 s each with a local model.
+- A shared GPU can slow a model enough that investigations time out.
+- GitHub App authentication is implemented and unit-tested, never run against real GitHub.
+- The AI is not always right: verify before acting. That is why every quote is checked and the
+  confidence is capped.
