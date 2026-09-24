@@ -1,6 +1,26 @@
+<div align="center">
+
 # 🔎 DevInvestigator
 
-**Your pipeline failed. Know why in two minutes, not two hours.**
+### Your pipeline failed. Know why in two minutes, not two hours.
+
+*An AI agent that investigates failed CI/CD pipelines, proves its answer against the real logs,
+and tells your team how to fix it.*
+
+![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)
+![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)
+![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-supported-2088FF?logo=githubactions&logoColor=white)
+![AI](https://img.shields.io/badge/AI-local%20or%20API-7C3AED)
+![Tests](https://img.shields.io/badge/tests-295%20passing-2ea44f)
+![Read only](https://img.shields.io/badge/GitHub%20access-read--only-6b7280)
+
+[Why it exists](#why-it-exists) · [What you get](#what-you-get) · [Who it is for](#who-it-is-for) ·
+[How it works](#how-it-works) · [Setup](#setup-step-by-step) · [Status](#status--roadmap)
+
+</div>
+
+---
 
 When a GitHub Actions run fails, DevInvestigator investigates it by itself: it reads the failing job's
 log, opens the code at the broken commit, compares against the last run that passed, then posts the
@@ -21,6 +41,81 @@ GitHub through GET requests only. The single exception is posting a comment, whi
 and uses its own separate token.
 
 ---
+
+## Why it exists
+
+A pipeline fails at 11 p.m. Somebody opens GitHub, scrolls 4,000 lines of log, finds the one line that
+matters, opens the file, guesses which recent change broke it, and writes it up for the team. Twenty
+minutes, for a failure the team has probably seen before.
+
+```
+   WITHOUT DevInvestigator                    WITH DevInvestigator
+   ───────────────────────                    ────────────────────
+   pipeline fails                             pipeline fails
+        │                                          │
+        ▼                                          ▼  (automatic, nobody waits)
+   someone notices … eventually            evidence collected in ~1 s
+        │                                          │
+        ▼                                          ▼
+   open Actions, find the job              error section extracted
+        │                                          │
+        ▼                                          ▼
+   scroll thousands of log lines           AI reads the code at that commit
+        │                                          │
+        ▼                                          ▼
+   open the code, guess the cause          every quote verified, confidence capped
+        │                                          │
+        ▼                                          ▼
+   write it up for the team                comment on the commit or PR
+   ~20 minutes, one person                 ~2 minutes, nobody
+```
+
+## What you get
+
+| | Payan |
+|---|---|
+| ⏱️ **Time back** | The investigation happens while nobody is watching. The developer opens GitHub and the answer is already there. |
+| 🌙 **Failures never sit unexplained** | Night, weekend, on leave: the comment is written anyway. |
+| 🔁 **The same problem is never investigated twice** | A repeat is answered in ~1 second, free, with the same words as last time. |
+| 🐛 **Flaky tests stop hiding** | *"This failure has happened 7 times recently"* is often more useful than any single root cause. |
+| 🧾 **Evidence you can check** | Every quoted line is verified against the real log. No invented errors. |
+| 🎓 **Juniors are unblocked** | The fix arrives with its evidence, instead of waiting for a senior to have a free moment. |
+| 🔒 **Your code stays yours** | With a local model, no log and no source line ever leaves your server. |
+| 📈 **It improves with use** | Rules grow, repeats get cheaper, and the quality page shows whether it is actually helping. |
+
+### It gets better the longer you run it
+
+```
+   week 1          every failure → AI investigation            ~110 s each
+       │
+       ▼           repeats start matching
+   week 2–3        known failures → reused answer              ~1 s, free
+       │
+       ▼           team writes .devinvestigator.yml rules
+   month 2         "we know this one" → instant rule answer    ~1 s, free, always identical
+       │
+       ▼           feedback buttons collect correct / wrong
+   ongoing         quality page shows if it earns its place
+```
+
+## Who it is for
+
+| Situation | Worth it? | Why |
+|---|---|---|
+| **A team with several repositories** | ✅ Strongly | Nobody has to be the person who reads CI logs |
+| **Pipelines that fail often** (flaky tests, shared runners) | ✅ Strongly | Repeat detection turns noise into a countable fact |
+| **Juniors or new joiners in the team** | ✅ Yes | The fix arrives with evidence attached |
+| **Private code that cannot leave the company** | ✅ Yes | Local model on your own GPU |
+| **Long or matrix builds** (thousands of log lines) | ✅ Yes | The error section is extracted automatically |
+| **Open-source maintainers** | ✅ Yes | Contributors get the cause on their PR without you triaging |
+| **One developer, one repository, rare failures** | ⚠️ Probably not | Reading the log yourself takes 30 seconds |
+| **Failures that need a human decision** (design, product) | ❌ No | It explains what broke, not what you should want |
+
+### When you do not need it
+
+Be honest with yourself: if your pipeline fails twice a month with an obvious error, open the log. This
+tool earns its place when failures are **frequent**, **noisy**, or land on **someone who did not write
+the code** — that is where twenty minutes disappear, over and over.
 
 ## Contents
 
